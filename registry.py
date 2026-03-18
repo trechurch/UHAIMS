@@ -1,23 +1,11 @@
 # ──────────────────────────────────────────────────────────────────────────────
 #  registry.py  —  Module Registry + Auto-Discovery + Dispatch
 #
-#  Responsibilities:
-#    1. Scan modules/ folder and import every Dashboard subclass
-#    2. Validate each MANIFEST + DOCS (fails loudly at startup)
-#    3. Build nav structures (menu items, sidebar entries) from manifests
-#    4. Dispatch routing — given a page_key, call the right module
-#    5. Inject shared services (db) into modules at instantiation
-#
-#  app.py calls:
-#    registry = get_registry(db=get_db())
-#    registry.dispatch(st.session_state.page_key)
-#
-#  That is all app.py needs to know.
-#
-#  v1.0.0
+#  v1.0.1  —  Fix: get_registry(db) → get_registry(_db) so Streamlit's
+#             cache_resource doesn't try to hash the InventoryDatabase instance.
 # ──────────────────────────────────────────────────────────────────────────────
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 import importlib
 import importlib.util
@@ -87,7 +75,7 @@ class ModuleRegistry:
     Central wiring point for all dashboard modules.
 
     Instantiation:
-        registry = ModuleRegistry(db=get_db())
+        registry = get_registry(_db=get_db())
 
     Query:
         registry.all()                     -> list of all registered modules
@@ -103,8 +91,8 @@ class ModuleRegistry:
     def __init__(self, db=None, modules_dir: Optional[Path] = None):
         self._db          = db
         self._modules_dir = modules_dir or (Path(__file__).parent / "modules")
-        self._instances:  Dict[str, Dashboard] = {}   # module id -> instance
-        self._by_page:    Dict[str, str]        = {}   # page_key  -> module id
+        self._instances:  Dict[str, Dashboard] = {}
+        self._by_page:    Dict[str, str]        = {}
         self._errors:     List[str]             = []
         self._load()
 
@@ -155,7 +143,6 @@ class ModuleRegistry:
     # ── Public query API ──────────────────────────────────────────────────────
 
     def all(self) -> List[Dashboard]:
-        """All registered non-disabled modules."""
         return [m for m in self._instances.values() if m.status != "disabled"]
 
     def by_id(self, module_id: str) -> Optional[Dashboard]:
@@ -180,10 +167,7 @@ class ModuleRegistry:
         """
         Menu contribution dicts for all modules whose
         MANIFEST["menu"]["parent"] == menu_parent.
-
-        Returns list of:
-          { label, page_key, icon, shortcut, position, status }
-        sorted by position.
+        Sorted by position.
         """
         items = []
         for m in self.all():
@@ -203,10 +187,7 @@ class ModuleRegistry:
         """
         Sidebar nav dicts for all modules whose
         MANIFEST["sidebar"]["show"] == True.
-
-        Returns list of:
-          { label, page_key, icon, section, position, status }
-        sorted by section then position.
+        Sorted by section then position.
         """
         items = []
         for m in self.all():
@@ -227,13 +208,7 @@ class ModuleRegistry:
     def dispatch(self, page_key: str) -> None:
         """
         Route a page_key to the correct module.
-
-        Sequence:
-          1. Look up module by page_key
-          2. Fire on_load once per session
-          3. Call module.sidebar()
-          4. Call module.render() (or _render_stub() for stubs)
-
+        Fires on_load once per session, then sidebar(), then render().
         Graceful fallback on every failure — never white-screens.
         """
         module = self.by_page_key(page_key)
@@ -278,7 +253,7 @@ class ModuleRegistry:
             try:
                 module.on_unload()
             except Exception:
-                pass  # non-fatal
+                pass
 
     # ── Fallback renderers ────────────────────────────────────────────────────
 
@@ -323,14 +298,18 @@ class ModuleRegistry:
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  SINGLETON
+#
+#  _db (leading underscore) tells Streamlit's cache_resource not to hash
+#  the InventoryDatabase argument — it's an external resource, not a
+#  primitive.  Without this, Streamlit throws UnhashableParamError.
 # ──────────────────────────────────────────────────────────────────────────────
 
 @st.cache_resource
-def get_registry(db=None) -> ModuleRegistry:
+def get_registry(_db=None) -> ModuleRegistry:
     """
     Cached singleton — _load() runs exactly once per app process.
-    Safe to call from anywhere.
+    Pass the db instance as _db (leading underscore bypasses Streamlit hashing).
     """
-    return ModuleRegistry(db=db)
+    return ModuleRegistry(db=_db)
 
 # ── end of registry.py ────────────────────────────────────────────────────────
