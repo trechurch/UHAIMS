@@ -2,9 +2,8 @@
 UHA Inventory Management System
 Streamlit Community Cloud — app shell
 
-v5.0.0 — Self-Describing Object Architecture (SDOA).
-         This file is a pure shell. All logic lives in modules/.
-         Adding a module = drop one file in modules/. Nothing here changes.
+v5.0.1  —  Fix: get_registry(_db=db) — leading underscore bypasses
+            Streamlit's UnhashableParamError on InventoryDatabase.
 """
 
 import streamlit as st
@@ -21,7 +20,7 @@ st.set_page_config(
 from database import InventoryDatabase
 from registry import get_registry
 
-__version__ = "5.0.0"
+__version__ = "5.0.1"
 
 # ── end of imports ────────────────────────────────────────────────────────────
 
@@ -87,7 +86,7 @@ def _render_sidebar(registry):
 
         st.markdown("---")
 
-        # Nav built from registry — zero hardcoded page names
+        # Nav built entirely from registry manifests
         items  = registry.sidebar_items()
         labels = [f"{i['icon']}  {i['label']}" for i in items]
         keys   = [i["page_key"] for i in items]
@@ -121,7 +120,7 @@ def _render_sidebar(registry):
 def main():
     _init()
     db       = get_db()
-    registry = get_registry(db=db)
+    registry = get_registry(_db=db)       # _db — leading underscore required
     _handle_query_params(registry)
     _render_sidebar(registry)
     registry.dispatch(st.session_state.page_key)
