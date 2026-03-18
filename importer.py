@@ -1,16 +1,14 @@
 """
 UHA IMS — Inventory Importer Service
-Vendor invoice CSV / XLSX ingestion
+Vendor invoice + count sheet CSV / XLSX ingestion
 
-v2.1.0  —  SDOA treatment (SERVICE_MANIFEST + SERVICE_DOCS)
-            Bug fixes:
-              - CSV encoding: chardet auto-detect replaces hardcoded utf-8-sig
-              - "Truth value of a Series is ambiguous": duplicate column names
-                after header detection now deduplicated; all row value access
-                uses _scalar() helper which always returns a plain Python value
+v2.2.0  —  Fix: CSV files now get the same header-row auto-detection
+            that XLSX files get. Previously CSV read with header=0
+            which grabbed the first metadata row as the header,
+            leaving all real columns unnamed and unmatched.
+            Also added count-sheet column mappings to COL_MAP.
 """
 
-import io
 import re
 import chardet
 import pandas as pd
@@ -42,16 +40,32 @@ HEADER_PACK     = ['PACK', 'UOM']
 HEADER_PRICE    = ['PRICE', 'COST', 'INVOICED']
 
 COL_MAP = {
+    # ── Description variants ──────────────────────────────────────────────────
     'ITEM DESCRIPTION': 'description', 'ITEM DESC':  'description',
     'DESCRIPTION':      'description', 'ITEM':       'description',
     'DESC':             'description', 'PRODUCT':    'description',
+
+    # ── Pack type variants ────────────────────────────────────────────────────
     'PACK TYPE':        'pack_type',   'PACK':       'pack_type',
     'UOM':              'pack_type',
+
+    # ── Price / cost variants ─────────────────────────────────────────────────
     'INVOICED PRICE':   'cost',        'CONFIRMED PRICE': 'cost',
     'CURRENT PRICE':    'cost',        'COST':       'cost',
-    'PRICE':            'cost',
+    'PRICE':            'cost',        'UNIT PRICE': 'cost',
+
+    # ── Quantity variants ─────────────────────────────────────────────────────
     'INVOICED QUANTITY':'quantity',    'CONFIRMED QUANTITY': 'quantity',
-    'QUANTITY':         'quantity',
+    'QUANTITY':         'quantity',    'INV COUNT':  'quantity',
+    'COUNT':            'quantity',    'QTY':        'quantity',
+
+    # ── Count-sheet specific ──────────────────────────────────────────────────
+    'LAST INVENTORY QTY': 'last_qty',
+    'TOTAL PRICE':      'total_price',
+    'LOCATION':         'location',
+    'SEQ':              'seq',
+
+    # ── GL / other ────────────────────────────────────────────────────────────
     'GL CODE':          'gl_field',    'GL':         'gl_field',
     'ACCOUNT':          'gl_field',
     'VENDOR':           'vendor',      'VENDORS':    'vendor',
@@ -66,14 +80,11 @@ COL_MAP = {
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  SCALAR HELPER  —  the fix for "truth value of a Series is ambiguous"
+#  SCALAR HELPER
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _scalar(val) -> Optional[str]:
-    """
-    Safely reduce any pandas or Python value to a plain scalar or None.
-    Handles Series, arrays, NaN, None, and normal values.
-    """
+    """Reduce any pandas or Python value to a plain string or None."""
     if isinstance(val, pd.Series):
         non_null = val.dropna()
         if non_null.empty:
@@ -142,11 +153,7 @@ def split_gl_field(gl_string) -> Tuple[str, str]:
 
 
 def should_skip_row(row_values) -> bool:
-    parts = []
-    for v in row_values:
-        s = _scalar(v)
-        if s:
-            parts.append(s)
+    parts = [_scalar(v) for v in row_values if _scalar(v)]
     row_str = ' '.join(parts).upper()
     return any(p in row_str for p in SKIP_PHRASES)
 
@@ -176,7 +183,7 @@ def find_header_row(df: pd.DataFrame, max_rows: int = 25) -> int:
 
 
 def _dedup_columns(cols) -> List[str]:
-    """Deduplicate column names — prevents Series-instead-of-scalar bug."""
+    """Deduplicate column names to prevent Series-instead-of-scalar bug."""
     seen:   Dict[str, int] = {}
     result: List[str]      = []
     for c in cols:
@@ -207,22 +214,14 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 class InventoryImporter:
 
-    # ──────────────────────────────────────────────────────────────────────────
-    #  SERVICE_MANIFEST
-    # ──────────────────────────────────────────────────────────────────────────
-
     SERVICE_MANIFEST = {
         "id":      "importer",
         "label":   "Inventory Importer",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "type":    "service",
-
         "supported_formats": ["CSV", "XLSX", "XLS"],
-        "invoice_types":     ["Type B1", "Type B2"],
-
         "depends_on": ["database"],
         "db_tables":  ["items", "item_history", "price_history"],
-
         "provides": [
             "read_file(filepath) -> DataFrame | None",
             "analyze_import(df) -> Dict",
@@ -231,44 +230,30 @@ class InventoryImporter:
         ],
     }
 
-    # ── end of SERVICE_MANIFEST ───────────────────────────────────────────────
-
-
-    # ──────────────────────────────────────────────────────────────────────────
-    #  SERVICE_DOCS
-    # ──────────────────────────────────────────────────────────────────────────
-
     SERVICE_DOCS = {
-        "summary": (
-            "Parses vendor invoice CSV/XLSX files, analyses them against the "
-            "existing item database, and executes new-item creation or smart updates."
-        ),
-        "usage": (
-            "Instantiate with an InventoryDatabase instance. "
-            "Call read_file() -> analyze_import() -> execute_import(). "
-            "Or call import_file() for the full pipeline in one call."
-        ),
+        "summary": "Parses vendor invoice and count sheet CSV/XLSX files.",
+        "usage":   "Instantiate with InventoryDatabase. Call read_file() → analyze_import() → execute_import().",
         "demo_ready": True,
         "notes": (
-            "CSV encoding is auto-detected via chardet. "
-            "Excel header row is auto-detected up to row 25. "
-            "Duplicate column names are deduplicated before iterrows(). "
-            "All row value access goes through _scalar()."
+            "v2.2.0: CSV files now get the same header-row auto-detection as XLSX. "
+            "Reads raw with header=None, finds the real header row, slices from there."
         ),
         "known_issues": [
-            "PAC inventory PDF import handled by pac_importer.py (not yet ported).",
+            "PAC inventory PDF import not yet ported.",
         ],
         "changelog": [
             {
+                "version": "2.2.0",
+                "date":    "2026-03-18",
+                "note":    "CSV header auto-detection + count-sheet column mappings.",
+            },
+            {
                 "version": "2.1.0",
                 "date":    "2026-03-18",
-                "note":    "SDOA treatment + bug fixes: chardet encoding, _scalar(), _dedup_columns().",
+                "note":    "chardet encoding + _scalar() + _dedup_columns().",
             },
         ],
     }
-
-    # ── end of SERVICE_DOCS ───────────────────────────────────────────────────
-
 
     def __init__(self, database):
         self.db     = database
@@ -277,23 +262,27 @@ class InventoryImporter:
     # ── File reading ──────────────────────────────────────────────────────────
 
     def read_file(self, filepath: str) -> Optional[pd.DataFrame]:
+        """
+        Read CSV or XLSX into a normalised DataFrame.
+        Both formats now use the same header-row auto-detection.
+        """
         self.errors = []
         try:
             path = str(filepath).lower()
 
             if path.endswith('.csv'):
-                df = self._read_csv(filepath)
-
+                df = self._read_csv_raw(filepath)
             elif path.endswith(('.xlsx', '.xls')):
                 df = pd.read_excel(filepath, header=None, dtype=str)
-                hdr        = find_header_row(df)
-                raw_cols   = df.iloc[hdr].tolist()
-                df.columns = _dedup_columns(raw_cols)
-                df         = df.iloc[hdr + 1:].reset_index(drop=True)
-
             else:
                 self.errors.append(f"Unsupported file type: {filepath}")
                 return None
+
+            # ── Header detection (same logic for both CSV and XLSX) ───────────
+            hdr        = find_header_row(df)
+            raw_cols   = df.iloc[hdr].tolist()
+            df.columns = _dedup_columns(raw_cols)
+            df         = df.iloc[hdr + 1:].reset_index(drop=True)
 
             df = normalize_columns(df)
             return df
@@ -302,8 +291,11 @@ class InventoryImporter:
             self.errors.append(f"Read error: {exc}")
             return None
 
-    def _read_csv(self, filepath: str) -> pd.DataFrame:
-        """Read CSV with chardet-detected encoding, fallback chain."""
+    def _read_csv_raw(self, filepath: str) -> pd.DataFrame:
+        """
+        Read CSV with chardet-detected encoding, header=None so we can
+        do our own header detection. Falls back through common encodings.
+        """
         with open(filepath, 'rb') as f:
             raw = f.read(min(65536, Path(filepath).stat().st_size))
 
@@ -317,12 +309,13 @@ class InventoryImporter:
                 continue
             seen.add(encoding)
             try:
-                return pd.read_csv(filepath, encoding=encoding, dtype=str)
+                return pd.read_csv(filepath, encoding=encoding,
+                                   header=None, dtype=str)
             except (UnicodeDecodeError, LookupError):
                 continue
 
         return pd.read_csv(filepath, encoding='latin-1',
-                           encoding_errors='replace', dtype=str)
+                           header=None, encoding_errors='replace', dtype=str)
 
     # ── Analysis ──────────────────────────────────────────────────────────────
 
@@ -350,6 +343,7 @@ class InventoryImporter:
 
             description = _scalar(row.get('description'))
             if not description:
+                analysis['skipped'].append(idx)
                 continue
 
             pack_raw  = _scalar(row.get('pack_type')) or ''
