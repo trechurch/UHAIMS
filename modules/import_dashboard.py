@@ -1,8 +1,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 #  modules/import_dashboard.py  —  Import Dashboard
-#  v1.0.2  —  Explicit error surfacing at every step so nothing fails silently.
+#  v1.0.3  —  Extra diagnostic caption after DB load to isolate hang location.
 # ──────────────────────────────────────────────────────────────────────────────
-__version__ = "1.0.2.2"
 
 import os
 import tempfile
@@ -15,15 +14,13 @@ import streamlit as st
 
 from base import Dashboard
 
-# ── end of imports ────────────────────────────────────────────────────────────
-
 
 class ImportDashboard(Dashboard):
 
     MANIFEST = {
         "id":       "import_dashboard",
         "label":    "Importer",
-        "version":  "1.0.2",
+        "version":  "1.0.3",
         "icon":     "📥",
         "status":   "active",
         "page_key": "import",
@@ -55,18 +52,15 @@ class ImportDashboard(Dashboard):
         "summary": "Upload and ingest vendor invoice files (CSV/XLSX).",
         "usage":   "Upload files, review preview, click Confirm Import.",
         "demo_ready": True,
-        "notes":   "v1.0.2 adds explicit error surfacing at every processing step.",
-        "known_issues": [
-            "Count sheet import not yet wired into this dashboard.",
-        ],
+        "notes":   "v1.0.3 adds diagnostic caption after DB load step.",
+        "known_issues": ["Count sheet import not yet wired."],
         "changelog": [
+            {"version": "1.0.3", "date": "2026-03-18", "note": "Extra diagnostic caption after DB load."},
             {"version": "1.0.2", "date": "2026-03-18", "note": "Explicit error surfacing."},
-            {"version": "1.0.1", "date": "2026-03-18", "note": "Lazy import of InventoryImporter."},
+            {"version": "1.0.1", "date": "2026-03-18", "note": "Lazy import."},
             {"version": "1.0.0", "date": "2026-03-18", "note": "Initial implementation."},
         ],
     }
-
-    # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def on_load(self) -> None:
         self._init_importer()
@@ -81,89 +75,86 @@ class ImportDashboard(Dashboard):
                 self._importer = None
                 self._importer_error = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
 
-    # ── Sidebar ───────────────────────────────────────────────────────────────
-
     def sidebar(self) -> None:
         with st.sidebar:
             st.markdown("**📥 Importer**")
             st.caption("Vendor invoices · CSV / XLSX")
 
-    # ── Render ────────────────────────────────────────────────────────────────
-
     def render(self) -> None:
         st.title(f"{self.icon} Import Dashboard")
         st.caption("Vendor invoice ingestion — CSV and XLSX supported.")
-
         self._init_importer()
-
         if self._importer is None:
             st.error(f"**Importer failed to load:**\n```\n{self._importer_error}\n```")
             return
-
         uploaded = st.file_uploader(
             "Drop vendor invoice files here",
             type=["csv", "xlsx", "xls"],
             accept_multiple_files=True,
             label_visibility="collapsed",
         )
-
         if not uploaded:
             st.info("Upload one or more invoice files to begin.")
             return
-
         for f in uploaded:
             self._process_file(f)
-
-    # ── Per-file processor ────────────────────────────────────────────────────
 
     def _process_file(self, f) -> None:
         st.markdown(f"---\n### 📄 {f.name}")
 
-        # Step 1: Read bytes
+        # Step 1
         try:
             content = f.read()
             st.caption(f"✓ Read {len(content):,} bytes")
         except Exception as exc:
-            st.error(f"**Step 1 failed (read bytes):** {exc}")
+            st.error(f"**Step 1 failed:** {exc}")
             return
 
-        # Step 2: Write temp file
+        # Step 2
+        tmp_path = None
         try:
             suffix = Path(f.name).suffix.lower()
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
                 tmp.write(content)
                 tmp_path = tmp.name
-            st.caption(f"✓ Temp file written")
+            st.caption("✓ Temp file written")
         except Exception as exc:
-            st.error(f"**Step 2 failed (temp file):** {exc}")
+            st.error(f"**Step 2 failed:** {exc}")
             return
 
-        # Step 3: Parse
+        # Step 3
         df = None
         try:
             df = self._importer.read_file(tmp_path)
+            if df is None:
+                st.error(f"**Step 3 failed (None):** {self._importer.errors}")
+                return
+            st.caption(f"✓ Parsed {len(df)} rows · cols: {list(df.columns[:8])}")
         except Exception as exc:
-            st.error(f"**Step 3 failed (read_file exception):** {exc}\n\n```\n{traceback.format_exc()}\n```")
+            st.error(f"**Step 3 failed:** {exc}")
+            st.code(traceback.format_exc())
+            return
         finally:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
+            if tmp_path:
+                try: os.unlink(tmp_path)
+                except Exception: pass
 
-        if df is None and not any("Step 3" in str(e) for e in []):
-            st.error(f"**Step 3 failed (returned None):** {self._importer.errors}")
-            return
-
-        if df is None:
-            return
-
-        st.caption(f"✓ Parsed {len(df)} rows · columns: {list(df.columns[:8])}")
-
-        # Step 4: Analyze
+        # Step 4a — DB load (isolated)
         try:
-            analysis = self._importer.analyze_import(df)
+            existing = self._importer._load_all_items()
+            st.caption(f"✓ DB loaded — {len(existing)} existing items in memory")
         except Exception as exc:
-            st.error(f"**Step 4 failed (analyze_import):** {exc}\n\n```\n{traceback.format_exc()}\n```")
+            st.error(f"**Step 4a failed (DB load):** {exc}")
+            st.code(traceback.format_exc())
+            return
+
+        # Step 4b — analyze
+        try:
+            analysis = self._importer.analyze_import_with_cache(df, existing)
+            st.caption(f"✓ Analysis complete")
+        except Exception as exc:
+            st.error(f"**Step 4b failed (analyze):** {exc}")
+            st.code(traceback.format_exc())
             return
 
         # Metrics
@@ -175,60 +166,28 @@ class ImportDashboard(Dashboard):
 
         if analysis["new_items"]:
             with st.expander(f"📋 {len(analysis['new_items'])} New Items"):
-                st.dataframe(
-                    pd.DataFrame([
-                        {"Key": i["key"], "Description": i["description"]}
-                        for i in analysis["new_items"]
-                    ]),
-                    use_container_width=True, hide_index=True,
-                )
+                st.dataframe(pd.DataFrame([{"Key": i["key"], "Description": i["description"]} for i in analysis["new_items"]]), use_container_width=True, hide_index=True)
 
         if analysis["updates"]:
             with st.expander(f"🔄 {len(analysis['updates'])} Updates"):
-                st.dataframe(
-                    pd.DataFrame([
-                        {
-                            "Key":            i["key"],
-                            "Description":    i["description"],
-                            "Fields Changed": ", ".join(i["changes"].keys()),
-                        }
-                        for i in analysis["updates"]
-                    ]),
-                    use_container_width=True, hide_index=True,
-                )
+                st.dataframe(pd.DataFrame([{"Key": i["key"], "Description": i["description"], "Fields Changed": ", ".join(i["changes"].keys())} for i in analysis["updates"]]), use_container_width=True, hide_index=True)
 
         if analysis["errors"]:
             with st.expander(f"⚠️ {len(analysis['errors'])} Row Errors"):
-                for e in analysis["errors"]:
-                    st.caption(e)
+                for e in analysis["errors"]: st.caption(e)
 
         if not analysis["new_items"] and not analysis["updates"]:
             st.warning("Nothing to import from this file.")
             return
 
-        if st.button(
-            f"✅ Confirm Import — {f.name}",
-            key=f"confirm_{f.name}",
-            type="primary",
-        ):
+        if st.button(f"✅ Confirm Import — {f.name}", key=f"confirm_{f.name}", type="primary"):
             try:
                 with st.spinner("Writing to database…"):
-                    results = self._importer.execute_import(
-                        analysis,
-                        changed_by="web_import",
-                        source_document=f.name,
-                        doc_date=datetime.now().strftime("%Y-%m-%d"),
-                    )
-                st.success(
-                    f"✅ Done — "
-                    f"**{results['new_items_added']}** added, "
-                    f"**{results['items_updated']}** updated."
-                )
+                    results = self._importer.execute_import(analysis, changed_by="web_import", source_document=f.name, doc_date=datetime.now().strftime("%Y-%m-%d"))
+                st.success(f"✅ Done — **{results['new_items_added']}** added, **{results['items_updated']}** updated.")
                 if results.get("errors"):
                     with st.expander(f"⚠️ {len(results['errors'])} write error(s)"):
-                        for e in results["errors"]:
-                            st.caption(e)
+                        for e in results["errors"]: st.caption(e)
             except Exception as exc:
-                st.error(f"**Commit failed:** {exc}\n\n```\n{traceback.format_exc()}\n```")
-
-
+                st.error(f"**Commit failed:** {exc}")
+                st.code(traceback.format_exc())
