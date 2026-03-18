@@ -179,7 +179,7 @@ class InventoryImporter:
     SERVICE_MANIFEST = {
         "id":      "importer",
         "label":   "Inventory Importer",
-        "version": "2.3.0",
+        "version": "2.3.1",
         "type":    "service",
         "supported_formats": ["CSV", "XLSX", "XLS"],
         "depends_on": ["database"],
