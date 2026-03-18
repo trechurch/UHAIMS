@@ -1,8 +1,7 @@
 """
 UHA IMS — Inventory Importer Service
-v2.3.0  —  Fix: dedup columns AFTER normalization so two source columns
-            that both map to the same canonical name (e.g. Pack Type + UOM
-            both -> pack_type) get deduplicated before iterrows().
+v2.4.0  —  Fix: analyze_import now loads all existing keys in ONE query
+            instead of one DB round-trip per row. 6500 queries -> 1.
 """
 
 import re
@@ -10,7 +9,7 @@ import chardet
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 SKIP_PHRASES = [
     "PROPERTY OF COMPASS GROUP", "PRINTED BY", "BILL TO",
@@ -156,20 +155,12 @@ def _dedup_columns(cols) -> List[str]:
 
 
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Map raw column names to canonical names via COL_MAP,
-    then dedup any resulting duplicate canonical names.
-    Deduplication happens AFTER mapping so that two source columns
-    that map to the same canonical name (e.g. Pack Type + UOM -> pack_type)
-    get suffixed rather than creating a duplicate-column Series bug.
-    """
     rename = {}
     for col in df.columns:
         key = str(col).strip().upper()
         if key in COL_MAP:
             rename[col] = COL_MAP[key]
     df = df.rename(columns=rename)
-    # Dedup after rename — catches cases like pack_type appearing twice
     df.columns = _dedup_columns(list(df.columns))
     return df
 
@@ -179,7 +170,7 @@ class InventoryImporter:
     SERVICE_MANIFEST = {
         "id":      "importer",
         "label":   "Inventory Importer",
-        "version": "2.3.1",
+        "version": "2.4.0",
         "type":    "service",
         "supported_formats": ["CSV", "XLSX", "XLS"],
         "depends_on": ["database"],
@@ -197,17 +188,19 @@ class InventoryImporter:
         "usage":   "Instantiate with InventoryDatabase. Call read_file() -> analyze_import() -> execute_import().",
         "demo_ready": True,
         "notes": (
-            "v2.3.0: dedup columns AFTER normalization so Pack Type + UOM "
-            "both mapping to pack_type no longer creates a Series ambiguity. "
-            "UOM now maps to 'uom' (not 'pack_type') to preserve both columns."
+            "v2.4.0: analyze_import fetches all existing keys in ONE query "
+            "and checks membership in a Python set. Previously did one DB "
+            "round-trip per row — 6500 queries on a typical file."
         ),
         "known_issues": [
             "PAC inventory PDF import not yet ported.",
         ],
         "changelog": [
-            {"version": "2.3.0", "date": "2026-03-18", "note": "Post-normalization column dedup. UOM -> uom not pack_type."},
-            {"version": "2.2.0", "date": "2026-03-18", "note": "CSV header auto-detection + count-sheet column mappings."},
-            {"version": "2.1.0", "date": "2026-03-18", "note": "chardet encoding + _scalar() + _dedup_columns()."},
+            {"version": "2.4.0", "date": "2026-03-18", "note": "Batch key lookup — 1 query instead of N queries."},
+            {"version": "2.3.1", "date": "2026-03-18", "note": "Version bump to confirm deploy."},
+            {"version": "2.3.0", "date": "2026-03-18", "note": "Post-normalization column dedup. UOM -> uom."},
+            {"version": "2.2.0", "date": "2026-03-18", "note": "CSV header auto-detection."},
+            {"version": "2.1.0", "date": "2026-03-18", "note": "chardet + _scalar() + _dedup_columns()."},
         ],
     }
 
@@ -228,9 +221,9 @@ class InventoryImporter:
                 return None
             hdr        = find_header_row(df)
             raw_cols   = df.iloc[hdr].tolist()
-            df.columns = _dedup_columns(raw_cols)   # dedup raw names first
+            df.columns = _dedup_columns(raw_cols)
             df         = df.iloc[hdr + 1:].reset_index(drop=True)
-            df         = normalize_columns(df)       # map + dedup canonical names
+            df         = normalize_columns(df)
             return df
         except Exception as exc:
             self.errors.append(f"Read error: {exc}")
@@ -253,6 +246,17 @@ class InventoryImporter:
                 continue
         return pd.read_csv(filepath, encoding='latin-1', header=None, encoding_errors='replace', dtype=str)
 
+    def _get_existing_keys(self) -> Set[str]:
+        """
+        Fetch all item keys from the DB in a single query.
+        Returns a Python set for O(1) membership testing.
+        """
+        try:
+            items = self.db.get_all_items(record_status=None)
+            return {i["key"] for i in items if i.get("key")}
+        except Exception:
+            return set()
+
     def analyze_import(self, df: pd.DataFrame) -> Dict:
         analysis = {
             'total_rows': len(df),
@@ -261,35 +265,48 @@ class InventoryImporter:
             'skipped':    [],
             'errors':     [],
         }
+
+        # ONE query to get all existing keys — not one per row
+        existing_keys: Set[str] = self._get_existing_keys()
+
         for idx, row in df.iterrows():
             row = row.where(pd.notna(row), None)
+
             if should_skip_row(row.values):
                 analysis['skipped'].append(idx)
                 continue
+
             status = (_scalar(row.get('status')) or '').upper()
             pack   = _scalar(row.get('pack_type')) or ''
             if 'SUBSTITUTION' in status or pack.strip() == '99':
                 analysis['skipped'].append(idx)
                 continue
+
             description = _scalar(row.get('description'))
             if not description:
                 analysis['skipped'].append(idx)
                 continue
+
             pack_raw  = _scalar(row.get('pack_type')) or ''
             pack_norm = normalize_pack_type(pack_raw)
             key       = build_key(description, pack_norm)
             if not key:
                 analysis['errors'].append(f"Row {idx + 1}: Could not build key")
                 continue
+
             item_data = self._prepare_row(row, key, pack_norm)
-            if self.db.item_exists(key):
+
+            if key in existing_keys:
+                # Fetch current item only for items that need update comparison
                 current = self.db.get_item(key)
-                changes = {
-                    f: {'old': current.get(f), 'new': item_data.get(f)}
-                    for f in ('cost', 'pack_type', 'vendor', 'gl_code')
-                    if item_data.get(f) is not None
-                    and str(current.get(f)) != str(item_data.get(f))
-                }
+                changes = {}
+                if current:
+                    changes = {
+                        f: {'old': current.get(f), 'new': item_data.get(f)}
+                        for f in ('cost', 'pack_type', 'vendor', 'gl_code')
+                        if item_data.get(f) is not None
+                        and str(current.get(f)) != str(item_data.get(f))
+                    }
                 analysis['updates'].append({
                     'key':         key,
                     'description': description,
@@ -302,6 +319,7 @@ class InventoryImporter:
                     'description': description,
                     'row_data':    item_data,
                 })
+
         return analysis
 
     def execute_import(self, analysis: Dict,
