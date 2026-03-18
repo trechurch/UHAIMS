@@ -2,6 +2,7 @@
 #  modules/import_dashboard.py  —  Import Dashboard
 #  v1.0.2  —  Explicit error surfacing at every step so nothing fails silently.
 # ──────────────────────────────────────────────────────────────────────────────
+__version__ = "1.0.2.2"
 
 import os
 import tempfile
@@ -15,7 +16,7 @@ import streamlit as st
 from base import Dashboard
 
 # ── end of imports ────────────────────────────────────────────────────────────
-__version__ = "1.0.2.2"
+
 
 class ImportDashboard(Dashboard):
 
