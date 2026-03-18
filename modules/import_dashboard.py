@@ -15,7 +15,7 @@ import streamlit as st
 from base import Dashboard
 
 # ── end of imports ────────────────────────────────────────────────────────────
-
+__version__ = "1.0.2.2"
 
 class ImportDashboard(Dashboard):
 
