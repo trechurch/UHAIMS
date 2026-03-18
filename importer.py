@@ -1,8 +1,7 @@
 """
 UHA IMS — Inventory Importer Service
-v2.5.0  —  analyze_import now fully in-memory:
-            ONE query fetches all items as a dict keyed by item key.
-            Zero per-row DB calls during analysis.
+v2.6.0  —  analyze_import_with_cache added as proper class method.
+            Dashboard can now isolate DB load from analysis loop.
 """
 
 import re
@@ -170,7 +169,7 @@ class InventoryImporter:
     SERVICE_MANIFEST = {
         "id":      "importer",
         "label":   "Inventory Importer",
-        "version": "2.5.0",
+        "version": "2.6.0",
         "type":    "service",
         "supported_formats": ["CSV", "XLSX", "XLS"],
         "depends_on": ["database"],
@@ -178,8 +177,10 @@ class InventoryImporter:
         "provides": [
             "read_file(filepath) -> DataFrame | None",
             "analyze_import(df) -> Dict",
+            "analyze_import_with_cache(df, existing) -> Dict",
             "execute_import(analysis, changed_by, source_document, doc_date) -> Dict",
             "import_file(filepath, changed_by, auto_approve) -> (analysis, results)",
+            "_load_all_items() -> Dict[str, dict]",
         ],
     }
 
@@ -187,19 +188,13 @@ class InventoryImporter:
         "summary": "Parses vendor invoice and count sheet CSV/XLSX files.",
         "usage":   "Instantiate with InventoryDatabase. Call read_file() -> analyze_import() -> execute_import().",
         "demo_ready": True,
-        "notes": (
-            "v2.5.0: analyze_import is fully in-memory. "
-            "One query loads the entire item table as a dict. "
-            "Zero per-row DB calls during analysis phase."
-        ),
+        "notes": "v2.6.0: analyze_import_with_cache is a proper class method.",
         "known_issues": ["PAC inventory PDF import not yet ported."],
         "changelog": [
-            {"version": "2.5.0", "date": "2026-03-18", "note": "Fully in-memory analysis — zero per-row DB calls."},
-            {"version": "2.4.0", "date": "2026-03-18", "note": "Batch key lookup — 1 query instead of N."},
-            {"version": "2.3.1", "date": "2026-03-18", "note": "Version bump to confirm deploy."},
-            {"version": "2.3.0", "date": "2026-03-18", "note": "Post-normalization column dedup. UOM -> uom."},
-            {"version": "2.2.0", "date": "2026-03-18", "note": "CSV header auto-detection."},
-            {"version": "2.1.0", "date": "2026-03-18", "note": "chardet + _scalar() + _dedup_columns()."},
+            {"version": "2.6.0", "date": "2026-03-18", "note": "analyze_import_with_cache as proper class method."},
+            {"version": "2.5.0", "date": "2026-03-18", "note": "Fully in-memory analysis."},
+            {"version": "2.4.0", "date": "2026-03-18", "note": "Batch key lookup."},
+            {"version": "2.3.0", "date": "2026-03-18", "note": "Post-normalization column dedup."},
         ],
     }
 
@@ -246,17 +241,15 @@ class InventoryImporter:
         return pd.read_csv(filepath, encoding='latin-1', header=None, encoding_errors='replace', dtype=str)
 
     def _load_all_items(self) -> Dict[str, dict]:
-        """
-        Fetch entire item table in ONE query.
-        Returns dict keyed by item key for O(1) lookup.
-        """
+        """Fetch entire item table in ONE query. Returns dict keyed by item key."""
         try:
             items = self.db.get_all_items(record_status=None)
             return {i["key"]: i for i in items if i.get("key")}
         except Exception:
             return {}
 
-    def analyze_import(self, df: pd.DataFrame) -> Dict:
+    def _analyze_loop(self, df: pd.DataFrame, existing: Dict[str, dict]) -> Dict:
+        """Core analysis loop — pure Python, zero DB calls."""
         analysis = {
             'total_rows': len(df),
             'new_items':  [],
@@ -264,59 +257,48 @@ class InventoryImporter:
             'skipped':    [],
             'errors':     [],
         }
-
-        # ONE query — entire item table in memory as a dict
-        existing: Dict[str, dict] = self._load_all_items()
-
         for idx, row in df.iterrows():
             row = row.where(pd.notna(row), None)
-
             if should_skip_row(row.values):
                 analysis['skipped'].append(idx)
                 continue
-
             status = (_scalar(row.get('status')) or '').upper()
             pack   = _scalar(row.get('pack_type')) or ''
             if 'SUBSTITUTION' in status or pack.strip() == '99':
                 analysis['skipped'].append(idx)
                 continue
-
             description = _scalar(row.get('description'))
             if not description:
                 analysis['skipped'].append(idx)
                 continue
-
             pack_raw  = _scalar(row.get('pack_type')) or ''
             pack_norm = normalize_pack_type(pack_raw)
             key       = build_key(description, pack_norm)
             if not key:
                 analysis['errors'].append(f"Row {idx + 1}: Could not build key")
                 continue
-
             item_data = self._prepare_row(row, key, pack_norm)
-
             if key in existing:
-                current = existing[key]   # dict lookup — no DB call
+                current = existing[key]
                 changes = {
                     f: {'old': current.get(f), 'new': item_data.get(f)}
                     for f in ('cost', 'pack_type', 'vendor', 'gl_code')
                     if item_data.get(f) is not None
                     and str(current.get(f)) != str(item_data.get(f))
                 }
-                analysis['updates'].append({
-                    'key':         key,
-                    'description': description,
-                    'changes':     changes,
-                    'row_data':    item_data,
-                })
+                analysis['updates'].append({'key': key, 'description': description, 'changes': changes, 'row_data': item_data})
             else:
-                analysis['new_items'].append({
-                    'key':         key,
-                    'description': description,
-                    'row_data':    item_data,
-                })
-
+                analysis['new_items'].append({'key': key, 'description': description, 'row_data': item_data})
         return analysis
+
+    def analyze_import(self, df: pd.DataFrame) -> Dict:
+        """Full pipeline: load items from DB then analyze."""
+        existing = self._load_all_items()
+        return self._analyze_loop(df, existing)
+
+    def analyze_import_with_cache(self, df: pd.DataFrame, existing: Dict[str, dict]) -> Dict:
+        """Analysis with pre-loaded items dict — DB load already done by caller."""
+        return self._analyze_loop(df, existing)
 
     def execute_import(self, analysis: Dict,
                        changed_by: str = "import",
