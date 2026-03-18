@@ -1,7 +1,8 @@
 """
 UHA IMS — Inventory Importer Service
-v2.4.0  —  Fix: analyze_import now loads all existing keys in ONE query
-            instead of one DB round-trip per row. 6500 queries -> 1.
+v2.5.0  —  analyze_import now fully in-memory:
+            ONE query fetches all items as a dict keyed by item key.
+            Zero per-row DB calls during analysis.
 """
 
 import re
@@ -41,8 +42,7 @@ COL_MAP = {
     'COUNT':            'quantity',    'QTY':        'quantity',
     'LAST INVENTORY QTY': 'last_qty',
     'TOTAL PRICE':      'total_price',
-    'LOCATION':         'location',
-    'SEQ':              'seq',
+    'LOCATION':         'location',    'SEQ':        'seq',
     'GL CODE':          'gl_field',    'GL':         'gl_field',
     'ACCOUNT':          'gl_field',
     'VENDOR':           'vendor',      'VENDORS':    'vendor',
@@ -170,7 +170,7 @@ class InventoryImporter:
     SERVICE_MANIFEST = {
         "id":      "importer",
         "label":   "Inventory Importer",
-        "version": "2.4.0",
+        "version": "2.5.0",
         "type":    "service",
         "supported_formats": ["CSV", "XLSX", "XLS"],
         "depends_on": ["database"],
@@ -188,15 +188,14 @@ class InventoryImporter:
         "usage":   "Instantiate with InventoryDatabase. Call read_file() -> analyze_import() -> execute_import().",
         "demo_ready": True,
         "notes": (
-            "v2.4.0: analyze_import fetches all existing keys in ONE query "
-            "and checks membership in a Python set. Previously did one DB "
-            "round-trip per row — 6500 queries on a typical file."
+            "v2.5.0: analyze_import is fully in-memory. "
+            "One query loads the entire item table as a dict. "
+            "Zero per-row DB calls during analysis phase."
         ),
-        "known_issues": [
-            "PAC inventory PDF import not yet ported.",
-        ],
+        "known_issues": ["PAC inventory PDF import not yet ported."],
         "changelog": [
-            {"version": "2.4.0", "date": "2026-03-18", "note": "Batch key lookup — 1 query instead of N queries."},
+            {"version": "2.5.0", "date": "2026-03-18", "note": "Fully in-memory analysis — zero per-row DB calls."},
+            {"version": "2.4.0", "date": "2026-03-18", "note": "Batch key lookup — 1 query instead of N."},
             {"version": "2.3.1", "date": "2026-03-18", "note": "Version bump to confirm deploy."},
             {"version": "2.3.0", "date": "2026-03-18", "note": "Post-normalization column dedup. UOM -> uom."},
             {"version": "2.2.0", "date": "2026-03-18", "note": "CSV header auto-detection."},
@@ -246,16 +245,16 @@ class InventoryImporter:
                 continue
         return pd.read_csv(filepath, encoding='latin-1', header=None, encoding_errors='replace', dtype=str)
 
-    def _get_existing_keys(self) -> Set[str]:
+    def _load_all_items(self) -> Dict[str, dict]:
         """
-        Fetch all item keys from the DB in a single query.
-        Returns a Python set for O(1) membership testing.
+        Fetch entire item table in ONE query.
+        Returns dict keyed by item key for O(1) lookup.
         """
         try:
             items = self.db.get_all_items(record_status=None)
-            return {i["key"] for i in items if i.get("key")}
+            return {i["key"]: i for i in items if i.get("key")}
         except Exception:
-            return set()
+            return {}
 
     def analyze_import(self, df: pd.DataFrame) -> Dict:
         analysis = {
@@ -266,8 +265,8 @@ class InventoryImporter:
             'errors':     [],
         }
 
-        # ONE query to get all existing keys — not one per row
-        existing_keys: Set[str] = self._get_existing_keys()
+        # ONE query — entire item table in memory as a dict
+        existing: Dict[str, dict] = self._load_all_items()
 
         for idx, row in df.iterrows():
             row = row.where(pd.notna(row), None)
@@ -296,17 +295,14 @@ class InventoryImporter:
 
             item_data = self._prepare_row(row, key, pack_norm)
 
-            if key in existing_keys:
-                # Fetch current item only for items that need update comparison
-                current = self.db.get_item(key)
-                changes = {}
-                if current:
-                    changes = {
-                        f: {'old': current.get(f), 'new': item_data.get(f)}
-                        for f in ('cost', 'pack_type', 'vendor', 'gl_code')
-                        if item_data.get(f) is not None
-                        and str(current.get(f)) != str(item_data.get(f))
-                    }
+            if key in existing:
+                current = existing[key]   # dict lookup — no DB call
+                changes = {
+                    f: {'old': current.get(f), 'new': item_data.get(f)}
+                    for f in ('cost', 'pack_type', 'vendor', 'gl_code')
+                    if item_data.get(f) is not None
+                    and str(current.get(f)) != str(item_data.get(f))
+                }
                 analysis['updates'].append({
                     'key':         key,
                     'description': description,
