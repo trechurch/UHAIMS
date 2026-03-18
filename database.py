@@ -2,12 +2,15 @@
 UHA IMS — Inventory Database Service
 PostgreSQL / Supabase backend
 
-v2.0.0 — SDOA treatment: SERVICE_MANIFEST + SERVICE_DOCS added.
-          All existing implementation code is unchanged.
+v2.1.0  —  import_jobs table added to create_tables().
+            New job tracker methods:
+              create_job(), update_job(), get_job(), get_recent_jobs(),
+              get_active_jobs(), fail_job()
 """
 
 import os
 import json
+import uuid
 import psycopg2
 import psycopg2.extras
 from datetime import datetime
@@ -22,7 +25,6 @@ from contextlib import contextmanager
 # ──────────────────────────────────────────────────────────────────────────────
 
 def get_connection_string() -> str:
-    """Get DB URL from Streamlit secrets or environment variable."""
     try:
         import streamlit as st
         return st.secrets["SUPABASE_DB_URL"]
@@ -32,7 +34,6 @@ def get_connection_string() -> str:
 
 @contextmanager
 def get_conn():
-    """Context manager — opens and closes a pooled connection per operation."""
     conn = psycopg2.connect(get_connection_string())
     try:
         yield conn
@@ -53,32 +54,24 @@ def get_conn():
 class InventoryDatabase:
 
     # ──────────────────────────────────────────────────────────────────────────
-    #  SERVICE_MANIFEST  —  what this service is and what it provides
+    #  SERVICE_MANIFEST
     # ──────────────────────────────────────────────────────────────────────────
 
     SERVICE_MANIFEST = {
         "id":          "database",
         "label":       "Inventory Database",
-        "version":     "2.0.0",
-        "type":        "service",           # not a dashboard — injected dependency
-
-        # Connection
+        "version":     "2.1.0",
+        "type":        "service",
         "backend":     "supabase_postgresql",
-        "connection":  "session_pooler",    # aws-1-us-west-1.pooler.supabase.com:6543
-        "secret_key":  "SUPABASE_DB_URL",   # key in st.secrets / env var
-
-        # Tables owned by this service
+        "connection":  "session_pooler",
+        "secret_key":  "SUPABASE_DB_URL",
+        "key_format":  "ITEM NAME||PACKTYPE",
         "db_tables": [
             "items",
             "item_history",
             "price_history",
-            "inventory_transactions",
-            "import_log",
-            "recipes",
-            "recipe_ingredients",
+            "import_jobs",
         ],
-
-        # Public API surface — methods other modules may call
         "provides": [
             "add_item(item_data, changed_by)",
             "upsert_item(item_data, doc_date, source_document, changed_by)",
@@ -97,55 +90,57 @@ class InventoryDatabase:
             "get_item_history(key, limit)",
             "get_price_history(key, limit)",
             "build_key(item_name, pack_type)",
+            "create_job(job_type, source_file, total_rows, triggered_by)",
+            "update_job(job_id, **kwargs)",
+            "get_job(job_id)",
+            "get_recent_jobs(limit)",
+            "get_active_jobs()",
+            "fail_job(job_id, error)",
         ],
-
-        # Canonical item key format — CRITICAL — do not deviate
-        "key_format":  "ITEM NAME||PACKTYPE",
     }
 
     # ── end of SERVICE_MANIFEST ───────────────────────────────────────────────
 
 
     # ──────────────────────────────────────────────────────────────────────────
-    #  SERVICE_DOCS  —  narrative, issues, changelog
+    #  SERVICE_DOCS
     # ──────────────────────────────────────────────────────────────────────────
 
     SERVICE_DOCS = {
         "summary": (
             "Core PostgreSQL/Supabase data layer for all inventory operations. "
-            "Injected into dashboard modules via the registry — never instantiated directly by app.py."
+            "Injected into dashboard modules via the registry."
         ),
         "usage": (
             "Access via self.db inside any Dashboard subclass. "
-            "The registry injects the shared instance at module instantiation. "
-            "Never import or instantiate InventoryDatabase directly inside a module."
+            "Never import or instantiate directly inside a module."
         ),
         "demo_ready": True,
         "notes": (
-            "Must use the Supabase session pooler endpoint (IPv4, port 6543) — "
-            "not the direct connection (IPv6, port 5432) — for Streamlit Cloud compatibility. "
-            "Canonical item key format is 'ITEM NAME||PACKTYPE'. "
-            "Any deviation from this format is a bug. "
-            "create_tables() is migration-safe (CREATE TABLE IF NOT EXISTS + ALTER TABLE). "
-            "All writes go through _apply_update() which records field-level history automatically."
+            "v2.1.0 adds import_jobs table for background job tracking. "
+            "Must use session pooler endpoint (port 6543). "
+            "Canonical item key format is ITEM NAME||PACKTYPE."
         ),
         "known_issues": [
-            "importer.py generates item keys using timestamps instead of canonical ITEM||PACK format — tracked separately.",
             "Catering cost center requires a separate Supabase connection — not yet wired.",
-            "fuzzy_match_description() and score_import_row() from old database.py not yet ported to this version.",
-            "update_quantity_from_count(), log_count_import(), get_import_log() from old database.py not yet ported.",
-            "import_log table and inventory_transactions table DDL not yet in create_tables().",
+            "fuzzy_match_description(), score_import_row() not yet ported.",
+            "update_quantity_from_count(), log_count_import(), get_import_log() not yet ported.",
         ],
         "changelog": [
             {
+                "version": "2.1.0",
+                "date":    "2026-03-18",
+                "note":    "import_jobs table + job tracker methods added.",
+            },
+            {
                 "version": "2.0.0",
                 "date":    "2026-03-17",
-                "note":    "SDOA treatment: SERVICE_MANIFEST + SERVICE_DOCS added. Implementation unchanged.",
+                "note":    "SDOA treatment: SERVICE_MANIFEST + SERVICE_DOCS added.",
             },
             {
                 "version": "1.0.0",
                 "date":    "2025-01-01",
-                "note":    "Initial Supabase/PostgreSQL implementation, drop-in replacement for SQLite version.",
+                "note":    "Initial Supabase/PostgreSQL implementation.",
             },
         ],
     }
@@ -158,7 +153,6 @@ class InventoryDatabase:
     # ──────────────────────────────────────────────────────────────────────────
 
     def __init__(self, db_url: str = None):
-        """db_url optional — falls back to st.secrets / env var if not provided."""
         if db_url:
             os.environ["SUPABASE_DB_URL"] = db_url
         self.create_tables()
@@ -233,10 +227,30 @@ class InventoryDatabase:
                     imported_at TIMESTAMPTZ DEFAULT NOW()
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_items_description ON items(description);
-                CREATE INDEX IF NOT EXISTS idx_items_gl_code     ON items(gl_code);
-                CREATE INDEX IF NOT EXISTS idx_items_vendor      ON items(vendor);
-                CREATE INDEX IF NOT EXISTS idx_history_item_key  ON item_history(item_key);
+                CREATE TABLE IF NOT EXISTS import_jobs (
+                    job_id        TEXT PRIMARY KEY,
+                    job_type      TEXT NOT NULL DEFAULT 'invoice_import',
+                    status        TEXT NOT NULL DEFAULT 'pending',
+                    source_file   TEXT,
+                    total_rows    INTEGER DEFAULT 0,
+                    processed     INTEGER DEFAULT 0,
+                    added         INTEGER DEFAULT 0,
+                    updated       INTEGER DEFAULT 0,
+                    skipped       INTEGER DEFAULT 0,
+                    error_count   INTEGER DEFAULT 0,
+                    errors        JSONB,
+                    triggered_by  TEXT,
+                    started_at    TIMESTAMPTZ DEFAULT NOW(),
+                    finished_at   TIMESTAMPTZ,
+                    notes         TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_items_description  ON items(description);
+                CREATE INDEX IF NOT EXISTS idx_items_gl_code      ON items(gl_code);
+                CREATE INDEX IF NOT EXISTS idx_items_vendor       ON items(vendor);
+                CREATE INDEX IF NOT EXISTS idx_history_item_key   ON item_history(item_key);
+                CREATE INDEX IF NOT EXISTS idx_import_jobs_status ON import_jobs(status);
+                CREATE INDEX IF NOT EXISTS idx_import_jobs_started ON import_jobs(started_at DESC);
             """)
 
     # ── end of schema ─────────────────────────────────────────────────────────
@@ -264,19 +278,19 @@ class InventoryDatabase:
     def add_item(self, item_data: Dict[str, Any],
                  changed_by: str = "system") -> bool:
         now = datetime.utcnow()
-        item_data.setdefault("created_date", now)
-        item_data.setdefault("last_updated", now)
-        item_data.setdefault("record_status", "active")
-        item_data.setdefault("yield", 1.0)
-        item_data.setdefault("conv_ratio", 1.0)
+        item_data.setdefault("created_date",     now)
+        item_data.setdefault("last_updated",     now)
+        item_data.setdefault("record_status",    "active")
+        item_data.setdefault("yield",            1.0)
+        item_data.setdefault("conv_ratio",       1.0)
         item_data.setdefault("quantity_on_hand", 0)
-        item_data.setdefault("is_chargeable", True)
-        item_data.setdefault("status_tag", "Standard")
+        item_data.setdefault("is_chargeable",    True)
+        item_data.setdefault("status_tag",       "Standard")
 
-        cols = list(item_data.keys())
-        vals = list(item_data.values())
+        cols         = list(item_data.keys())
+        vals         = list(item_data.values())
         placeholders = ", ".join(["%s"] * len(cols))
-        col_str = ", ".join(cols)
+        col_str      = ", ".join(cols)
         try:
             with get_conn() as conn:
                 cur = conn.cursor()
@@ -422,7 +436,7 @@ class InventoryDatabase:
         now = datetime.utcnow()
 
         if incoming.get("cost"):
-            updates["cost"] = incoming["cost"]
+            updates["cost"]       = incoming["cost"]
             updates["status_tag"] = "✅ Updated Today"
         if "quantity_on_hand" in incoming:
             updates["quantity_on_hand"] = incoming["quantity_on_hand"]
@@ -481,7 +495,7 @@ class InventoryDatabase:
                                   change_source="clear_override",
                                   changed_by=changed_by)
 
-    # ── end of smart update + overrides ──────────────────────────────────────
+    # ── end of smart update ───────────────────────────────────────────────────
 
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -510,6 +524,92 @@ class InventoryDatabase:
 
 
     # ──────────────────────────────────────────────────────────────────────────
+    #  IMPORT JOB TRACKER
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def create_job(self, job_type: str = "invoice_import",
+                   source_file: str = None,
+                   total_rows: int = 0,
+                   triggered_by: str = "user") -> str:
+        """
+        Create a new import_jobs record.
+        Returns the job_id (UUID string).
+        """
+        job_id = str(uuid.uuid4())
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO import_jobs
+                    (job_id, job_type, status, source_file,
+                     total_rows, triggered_by, started_at)
+                VALUES (%s, %s, 'running', %s, %s, %s, NOW())
+            """, (job_id, job_type, source_file, total_rows, triggered_by))
+        return job_id
+
+    def update_job(self, job_id: str, **kwargs) -> None:
+        """
+        Update any combination of job fields.
+        Accepted kwargs: status, processed, added, updated, skipped,
+                         error_count, errors, finished_at, notes
+        """
+        allowed = {"status", "processed", "added", "updated", "skipped",
+                   "error_count", "errors", "finished_at", "notes"}
+        fields  = {k: v for k, v in kwargs.items() if k in allowed}
+        if not fields:
+            return
+        # Serialize errors list to JSON if provided
+        if "errors" in fields and isinstance(fields["errors"], list):
+            fields["errors"] = json.dumps(fields["errors"])
+        set_clause = ", ".join(f"{k} = %s" for k in fields)
+        vals       = list(fields.values()) + [job_id]
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"UPDATE import_jobs SET {set_clause} WHERE job_id = %s",
+                vals
+            )
+
+    def get_job(self, job_id: str) -> Optional[Dict]:
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("SELECT * FROM import_jobs WHERE job_id = %s", (job_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def get_recent_jobs(self, limit: int = 20) -> List[Dict]:
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("""
+                SELECT * FROM import_jobs
+                ORDER BY started_at DESC
+                LIMIT %s
+            """, (limit,))
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_active_jobs(self) -> List[Dict]:
+        """Return all jobs with status = 'running'."""
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("""
+                SELECT * FROM import_jobs
+                WHERE status = 'running'
+                ORDER BY started_at DESC
+            """)
+            return [dict(r) for r in cur.fetchall()]
+
+    def fail_job(self, job_id: str, error: str) -> None:
+        """Mark a job as failed with an error message."""
+        self.update_job(
+            job_id,
+            status="failed",
+            finished_at=datetime.utcnow(),
+            notes=error,
+        )
+
+    # ── end of import job tracker ─────────────────────────────────────────────
+
+
+    # ──────────────────────────────────────────────────────────────────────────
     #  INTERNALS
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -524,7 +624,7 @@ class InventoryDatabase:
             return False
         try:
             set_clause = ", ".join([f"{k} = %s" for k in updates])
-            vals = list(updates.values()) + [key]
+            vals       = list(updates.values()) + [key]
             with get_conn() as conn:
                 cur = conn.cursor()
                 cur.execute(
