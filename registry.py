@@ -1,18 +1,19 @@
 # ──────────────────────────────────────────────────────────────────────────────
 #  registry.py  —  Module Registry + Auto-Discovery + Dispatch
 #
-#  v1.0.1  —  Fix: get_registry(db) → get_registry(_db) so Streamlit's
-#             cache_resource doesn't try to hash the InventoryDatabase instance.
+#  v1.0.2  —  Fix: discovery errors now stored in self._errors so they
+#              appear in diagnostics().  Previously they were silently
+#              swallowed by st.warning() and never surfaced.
 # ──────────────────────────────────────────────────────────────────────────────
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 import importlib
 import importlib.util
 import inspect
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Type
+from typing import Dict, List, Optional, Tuple, Type
 
 import streamlit as st
 
@@ -25,12 +26,14 @@ from base import Dashboard, ManifestError, DocsError, StubMixin
 #  DISCOVERY
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _discover_dashboard_classes(modules_dir: Path) -> List[Type[Dashboard]]:
+def _discover_dashboard_classes(
+    modules_dir: Path,
+    errors: List[str],          # ← caller passes in the errors list
+) -> List[Type[Dashboard]]:
     """
     Scan modules_dir for .py files, import each, collect Dashboard subclasses.
-    Skips _doc.py companions, __init__.py, and base.py.
-    Logs warnings on import errors and continues — one bad module never
-    kills the whole app.
+    All errors are appended to the caller-supplied `errors` list so they
+    surface in registry.diagnostics().
     """
     found: List[Type[Dashboard]] = []
 
@@ -49,9 +52,11 @@ def _discover_dashboard_classes(modules_dir: Path) -> List[Type[Dashboard]]:
             sys.modules[module_name] = mod
             spec.loader.exec_module(mod)
         except Exception as exc:
-            st.warning(f"[registry] Could not import {py_file.name}: {exc}")
+            msg = f"Import error — {py_file.name}: {type(exc).__name__}: {exc}"
+            errors.append(msg)
             continue
 
+        classes_found = 0
         for _, obj in inspect.getmembers(mod, inspect.isclass):
             if (
                 issubclass(obj, Dashboard)
@@ -60,6 +65,13 @@ def _discover_dashboard_classes(modules_dir: Path) -> List[Type[Dashboard]]:
                 and obj.__module__ == module_name
             ):
                 found.append(obj)
+                classes_found += 1
+
+        if classes_found == 0:
+            errors.append(
+                f"No Dashboard subclass found in {py_file.name} "
+                f"(check class definition and __module__ == '{module_name}')"
+            )
 
     return found
 
@@ -71,22 +83,6 @@ def _discover_dashboard_classes(modules_dir: Path) -> List[Type[Dashboard]]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ModuleRegistry:
-    """
-    Central wiring point for all dashboard modules.
-
-    Instantiation:
-        registry = get_registry(_db=get_db())
-
-    Query:
-        registry.all()                     -> list of all registered modules
-        registry.by_page_key("import")     -> Dashboard | None
-        registry.by_id("import_dashboard") -> Dashboard | None
-        registry.nav_items("Dashboards")   -> list of menu contribution dicts
-        registry.sidebar_items()           -> list of sidebar contribution dicts
-
-    Dispatch:
-        registry.dispatch("import")        -> calls module.render()
-    """
 
     def __init__(self, db=None, modules_dir: Optional[Path] = None):
         self._db          = db
@@ -100,40 +96,39 @@ class ModuleRegistry:
 
     def _load(self) -> None:
         if not self._modules_dir.exists():
-            st.error(
-                f"[registry] modules/ directory not found at {self._modules_dir}. "
-                f"Create it and add your dashboard modules."
+            self._errors.append(
+                f"modules/ directory not found at {self._modules_dir}"
             )
             return
 
-        classes = _discover_dashboard_classes(self._modules_dir)
+        # Pass self._errors so discovery errors are captured
+        classes = _discover_dashboard_classes(self._modules_dir, self._errors)
 
         for cls in classes:
             try:
                 instance = cls(db=self._db)
             except (ManifestError, DocsError) as exc:
-                self._errors.append(str(exc))
-                st.warning(f"[registry] Skipping {cls.__name__}: {exc}")
+                self._errors.append(f"Manifest/Docs error — {cls.__name__}: {exc}")
                 continue
             except Exception as exc:
-                self._errors.append(str(exc))
-                st.warning(f"[registry] Error instantiating {cls.__name__}: {exc}")
+                self._errors.append(
+                    f"Instantiation error — {cls.__name__}: "
+                    f"{type(exc).__name__}: {exc}"
+                )
                 continue
 
             mid = instance.id
             pk  = instance.page_key
 
             if mid in self._instances:
-                st.warning(
-                    f"[registry] Duplicate module id '{mid}' "
-                    f"({cls.__name__} conflicts with existing). Skipping."
+                self._errors.append(
+                    f"Duplicate module id '{mid}' — {cls.__name__} skipped"
                 )
                 continue
 
             if pk in self._by_page:
-                st.warning(
-                    f"[registry] Duplicate page_key '{pk}' "
-                    f"({cls.__name__} conflicts with existing). Skipping."
+                self._errors.append(
+                    f"Duplicate page_key '{pk}' — {cls.__name__} skipped"
                 )
                 continue
 
@@ -164,11 +159,6 @@ class ModuleRegistry:
     # ── Navigation builders ───────────────────────────────────────────────────
 
     def nav_items(self, menu_parent: str) -> List[Dict]:
-        """
-        Menu contribution dicts for all modules whose
-        MANIFEST["menu"]["parent"] == menu_parent.
-        Sorted by position.
-        """
         items = []
         for m in self.all():
             menu_cfg = m.MANIFEST.get("menu", {})
@@ -184,11 +174,6 @@ class ModuleRegistry:
         return sorted(items, key=lambda x: x["position"])
 
     def sidebar_items(self) -> List[Dict]:
-        """
-        Sidebar nav dicts for all modules whose
-        MANIFEST["sidebar"]["show"] == True.
-        Sorted by section then position.
-        """
         items = []
         for m in self.all():
             sb_cfg = m.MANIFEST.get("sidebar", {})
@@ -206,11 +191,6 @@ class ModuleRegistry:
     # ── Dispatch ──────────────────────────────────────────────────────────────
 
     def dispatch(self, page_key: str) -> None:
-        """
-        Route a page_key to the correct module.
-        Fires on_load once per session, then sidebar(), then render().
-        Graceful fallback on every failure — never white-screens.
-        """
         module = self.by_page_key(page_key)
 
         if module is None:
@@ -221,7 +201,6 @@ class ModuleRegistry:
             self._render_disabled(module)
             return
 
-        # on_load once per session
         load_key = f"_registry_loaded_{module.id}"
         if not st.session_state.get(load_key, False):
             try:
@@ -230,13 +209,11 @@ class ModuleRegistry:
             except Exception as exc:
                 st.error(f"[{module.label}] on_load() failed: {exc}")
 
-        # sidebar
         try:
             module.sidebar()
         except Exception as exc:
             st.sidebar.error(f"[{module.label}] sidebar() error: {exc}")
 
-        # render
         try:
             if module.is_stub:
                 module._render_stub()
@@ -261,7 +238,7 @@ class ModuleRegistry:
     def _render_404(page_key: str) -> None:
         st.title("404 — Page Not Found")
         st.error(
-            f"No module is registered for page key **`{page_key}`**.  "
+            f"No module registered for page key **`{page_key}`**.  \n"
             f"Check the module's MANIFEST `page_key` field."
         )
 
@@ -274,10 +251,10 @@ class ModuleRegistry:
     def _render_crash(module: Dashboard, exc: Exception) -> None:
         st.title(f"{module.icon} {module.label}")
         st.error(
-            f"**{module.label}** encountered a render error.  \n"
+            f"**{module.label}** render error:  \n"
             f"`{type(exc).__name__}: {exc}`"
         )
-        with st.expander("Module manifest (for debugging)"):
+        with st.expander("Module manifest"):
             st.json(module.MANIFEST)
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
@@ -298,17 +275,12 @@ class ModuleRegistry:
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  SINGLETON
-#
-#  _db (leading underscore) tells Streamlit's cache_resource not to hash
-#  the InventoryDatabase argument — it's an external resource, not a
-#  primitive.  Without this, Streamlit throws UnhashableParamError.
 # ──────────────────────────────────────────────────────────────────────────────
 
 @st.cache_resource
 def get_registry(_db=None) -> ModuleRegistry:
     """
-    Cached singleton — _load() runs exactly once per app process.
-    Pass the db instance as _db (leading underscore bypasses Streamlit hashing).
+    Cached singleton. _db prefix bypasses Streamlit's unhashable param error.
     """
     return ModuleRegistry(db=_db)
 
