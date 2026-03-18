@@ -1,7 +1,8 @@
 # ──────────────────────────────────────────────────────────────────────────────
 #  modules/import_dashboard.py  —  Import Dashboard
-#  v1.0.1  —  Lazy import of InventoryImporter so a missing dependency
-#              cannot prevent this module from registering.
+#  Vendor invoice ingestion UI — wraps InventoryImporter service
+#
+#  v1.0.0
 # ──────────────────────────────────────────────────────────────────────────────
 
 import os
@@ -13,9 +14,7 @@ import pandas as pd
 import streamlit as st
 
 from base import Dashboard
-
-# NOTE: InventoryImporter is imported lazily inside on_load() and render()
-# so that a missing chardet/rapidfuzz dependency cannot block registry loading.
+from importer import InventoryImporter
 
 # ── end of imports ────────────────────────────────────────────────────────────
 
@@ -29,7 +28,7 @@ class ImportDashboard(Dashboard):
     MANIFEST = {
         "id":       "import_dashboard",
         "label":    "Importer",
-        "version":  "1.0.1",
+        "version":  "1.0.0",
         "icon":     "📥",
         "status":   "active",
         "page_key": "import",
@@ -83,8 +82,8 @@ class ImportDashboard(Dashboard):
         "demo_ready": True,
         "notes": (
             "Uses InventoryImporter service for all parsing logic. "
-            "Importer is imported lazily to prevent dependency errors "
-            "from blocking module registration."
+            "Encoding errors and duplicate-column bugs from previous version are fixed. "
+            "Count sheet import is a separate module — coming soon."
         ),
         "known_issues": [
             "Count sheet import not yet wired into this dashboard.",
@@ -92,14 +91,9 @@ class ImportDashboard(Dashboard):
         ],
         "changelog": [
             {
-                "version": "1.0.1",
-                "date":    "2026-03-18",
-                "note":    "Lazy import of InventoryImporter to prevent silent registry failures.",
-            },
-            {
                 "version": "1.0.0",
                 "date":    "2026-03-18",
-                "note":    "Initial SDOA implementation.",
+                "note":    "Initial SDOA implementation with fixed importer service.",
             },
         ],
     }
@@ -110,18 +104,7 @@ class ImportDashboard(Dashboard):
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def on_load(self) -> None:
-        self._init_importer()
-
-    def _init_importer(self):
-        """Lazily import and instantiate InventoryImporter."""
-        if not hasattr(self, '_importer'):
-            try:
-                from importer import InventoryImporter
-                self._importer = InventoryImporter(self.db)
-                self._importer_error = None
-            except Exception as exc:
-                self._importer = None
-                self._importer_error = str(exc)
+        self._importer = InventoryImporter(self.db)
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
 
@@ -136,15 +119,8 @@ class ImportDashboard(Dashboard):
         st.title(f"{self.icon} Import Dashboard")
         st.caption("Vendor invoice ingestion — CSV and XLSX supported.")
 
-        self._init_importer()
-
-        if self._importer is None:
-            st.error(
-                f"Importer service failed to load: `{self._importer_error}`  \n"
-                f"Check that `importer.py` is in the repo root and all "
-                f"dependencies are in `requirements.txt`."
-            )
-            return
+        if not hasattr(self, '_importer'):
+            self._importer = InventoryImporter(self.db)
 
         uploaded = st.file_uploader(
             "Drop vendor invoice files here",
