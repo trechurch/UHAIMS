@@ -2,8 +2,8 @@
 UHA Inventory Management System
 Streamlit Community Cloud — app shell
 
-v5.2.0  —  Hidden admin route: ?page=db_import
-            Calls database_sheet_importer.py directly.
+v5.2.1  —  Fix: admin route db_import now persists correctly via
+            session state before query params are cleared.
 """
 
 import streamlit as st
@@ -19,7 +19,9 @@ from database import InventoryDatabase
 from registry import get_registry
 from version_syncer import VersionSyncer
 
-__version__ = "5.2.0"
+__version__ = "5.2.1"
+
+ADMIN_PAGES = {"db_import"}
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  BOOTSTRAP
@@ -44,17 +46,19 @@ def _handle_query_params(registry):
         st.rerun()
     if "page" in params:
         key = params["page"]
-        # Hidden admin routes — handled before registry lookup
-        if key == "db_import":
-            st.session_state.page_key = "db_import"
+        # Set session state FIRST, then clear params
+        if key in ADMIN_PAGES:
+            st.session_state.page_key = key
             st.query_params.clear()
-            return
-        if key in registry.page_keys():
+            # No rerun needed — session state is already set for this render
+        elif key in registry.page_keys():
             registry.on_navigate_away(st.session_state.page_key)
             st.session_state.prev_page_key = st.session_state.page_key
             st.session_state.page_key = key
-        st.query_params.clear()
-        st.rerun()
+            st.query_params.clear()
+            st.rerun()
+        else:
+            st.query_params.clear()
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  VERSION BADGE
@@ -138,11 +142,8 @@ def _render_sidebar(registry, syncer):
         labels = [f"{i['icon']}  {i['label']}" for i in items]
         keys   = [i["page_key"] for i in items]
 
-        # If we're on a hidden admin page, don't try to select it in the radio
         current = st.session_state.page_key
-        if current not in keys and keys:
-            cur_idx = 0
-        elif current in keys:
+        if current in keys:
             cur_idx = keys.index(current)
         else:
             cur_idx = 0
@@ -156,6 +157,14 @@ def _render_sidebar(registry, syncer):
                 registry.on_navigate_away(st.session_state.page_key)
                 st.session_state.prev_page_key = st.session_state.page_key
                 st.session_state.page_key = chosen_key
+                st.rerun()
+
+        # Admin page indicator
+        if st.session_state.page_key in ADMIN_PAGES:
+            st.markdown("---")
+            st.warning("🔧 Admin mode")
+            if st.button("← Back to App"):
+                st.session_state.page_key = "dashboard"
                 st.rerun()
 
     _render_version_badge(registry)
@@ -186,23 +195,14 @@ def _show_diagnostics(registry, syncer):
         syncer.render_panel()
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  HIDDEN ADMIN PAGES
+#  ADMIN PAGES
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _render_admin_page(page_key: str):
-    """
-    Hidden admin routes not registered in the module registry.
-    Access via ?page=<key> in URL.
-    """
     if page_key == "db_import":
-        st.sidebar.markdown("---")
-        st.sidebar.warning("🔧 Admin: DB Import")
-        if st.sidebar.button("← Back to App"):
-            st.session_state.page_key = "dashboard"
-            st.rerun()
-        # Run the importer directly
         try:
-            import database_sheet_importer  # noqa — runs the Streamlit UI
+            import database_sheet_importer
+            database_sheet_importer.render()
         except Exception as exc:
             import traceback
             st.error(f"DB importer failed to load: {exc}")
@@ -211,9 +211,6 @@ def _render_admin_page(page_key: str):
 # ──────────────────────────────────────────────────────────────────────────────
 #  MAIN
 # ──────────────────────────────────────────────────────────────────────────────
-
-ADMIN_PAGES = {"db_import"}
-
 
 def main():
     _init()
@@ -224,7 +221,6 @@ def main():
     _handle_query_params(registry)
     _render_sidebar(registry, syncer)
 
-    # Route to admin page or normal module
     if st.session_state.page_key in ADMIN_PAGES:
         _render_admin_page(st.session_state.page_key)
     else:
