@@ -1,7 +1,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 #  modules/pca_dashboard.py  —  PCA Dashboard Module
-#  v1.0.1  —  Fix: ALTER TABLE migration adds record_status to existing
-#              recipes table that was created without it.
+#  v1.0.2  —  Fix: DROP and recreate recipes table if schema is wrong.
+#              Detects missing columns and rebuilds from scratch.
 # ──────────────────────────────────────────────────────────────────────────────
 
 import streamlit as st
@@ -12,7 +12,7 @@ class PCADashboard(Dashboard):
     MANIFEST = {
         "id":       "pca_dashboard",
         "label":    "PCA Tool",
-        "version":  "1.0.1",
+        "version":  "1.0.2",
         "icon":     "🧪",
         "status":   "active",
         "page_key": "pca",
@@ -37,41 +37,53 @@ class PCADashboard(Dashboard):
             "Compare cost % against goal",
             "Duplicate recipes",
             "Export PCA as JSON",
-            "AI ingredient suggestions via Anthropic API",
         ],
         "permissions": {"min_role": "user"},
     }
 
     DOCS = {
         "summary": "Portion Cost Analysis — build recipes, calculate costs, compare to goals.",
-        "usage": (
-            "Navigate to PCA Tool. Select or create a recipe. "
-            "Add ingredients from the inventory. "
-            "Review calculated cost % vs goal."
-        ),
+        "usage": "Navigate to PCA Tool. Select or create a recipe. Add ingredients. Review cost %.",
         "demo_ready": True,
-        "notes": (
-            "v1.0.1: ALTER TABLE migration adds record_status to existing "
-            "recipes table that was created without it."
-        ),
+        "notes": "v1.0.2: detects wrong schema and rebuilds recipes table from scratch.",
         "known_issues": [],
         "changelog": [
-            {"version": "1.0.1", "date": "2026-03-19", "note": "Migration fix for missing record_status column."},
+            {"version": "1.0.2", "date": "2026-03-19", "note": "Schema detection + rebuild if wrong."},
+            {"version": "1.0.1", "date": "2026-03-19", "note": "ALTER TABLE migration for record_status."},
             {"version": "1.0.0", "date": "2026-03-18", "note": "Initial SDOA module wrapper."},
         ],
     }
+
+    # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def on_load(self) -> None:
         self._ensure_tables()
 
     def _ensure_tables(self):
-        """Create recipes/recipe_ingredients tables if not present, and migrate if needed."""
+        """
+        Ensure recipes and recipe_ingredients have the correct schema.
+        If recipes exists but is missing required columns, drop and recreate it.
+        This is safe as long as there is no production recipe data to preserve.
+        """
         try:
             from database import get_conn
             with get_conn() as conn:
                 cur = conn.cursor()
 
-                # Create tables if missing
+                # Check if recipes table exists and has the 'name' column
+                cur.execute("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_name = 'recipes'
+                    AND column_name = 'name'
+                """)
+                has_name = cur.fetchone() is not None
+
+                if not has_name:
+                    # Table exists with wrong schema — drop and rebuild
+                    cur.execute("DROP TABLE IF EXISTS recipe_ingredients CASCADE;")
+                    cur.execute("DROP TABLE IF EXISTS recipes CASCADE;")
+
+                # Create correct schema
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS recipes (
                         recipe_id            SERIAL PRIMARY KEY,
@@ -105,33 +117,17 @@ class PCADashboard(Dashboard):
                         ON recipe_ingredients(recipe_id);
                 """)
 
-                # Migration: add record_status if missing from existing table
-                cur.execute("""
-                    ALTER TABLE recipes
-                    ADD COLUMN IF NOT EXISTS record_status TEXT DEFAULT 'active';
-                """)
-
-                # Migration: add other potentially missing columns
-                for col, defn in [
-                    ("component_name",       "TEXT DEFAULT 'Default'"),
-                    ("servings_per_portion", "INTEGER DEFAULT 1"),
-                    ("portions",             "INTEGER DEFAULT 1"),
-                    ("updated_by",           "TEXT"),
-                    ("created_at",           "TIMESTAMPTZ DEFAULT NOW()"),
-                    ("last_updated",         "TIMESTAMPTZ DEFAULT NOW()"),
-                ]:
-                    try:
-                        cur.execute(f"ALTER TABLE recipes ADD COLUMN IF NOT EXISTS {col} {defn};")
-                    except Exception:
-                        pass
-
         except Exception as exc:
-            st.warning(f"PCA table migration: {exc}")
+            st.warning(f"PCA table setup: {exc}")
+
+    # ── Sidebar ───────────────────────────────────────────────────────────────
 
     def sidebar(self) -> None:
         with st.sidebar:
             st.markdown("**🧪 PCA Tool**")
             st.caption("Portion Cost Analysis")
+
+    # ── Render ────────────────────────────────────────────────────────────────
 
     def render(self) -> None:
         try:
@@ -158,7 +154,9 @@ class PCADashboard(Dashboard):
 
         col1, col2 = st.columns([3, 1])
         with col1:
-            selected_name = st.selectbox("Recipe", ["— select or create —"] + names, key="pca_sel")
+            selected_name = st.selectbox(
+                "Recipe", ["— select or create —"] + names, key="pca_sel"
+            )
         with col2:
             st.markdown("<br>", unsafe_allow_html=True)
             create_new = st.button("➕ New Recipe", use_container_width=True)
@@ -213,6 +211,7 @@ class PCADashboard(Dashboard):
 
         st.markdown("---")
 
+        # Food ingredients
         st.subheader("🍽️ Food Ingredients")
         if result["food_lines"]:
             st.dataframe(pd.DataFrame([{
@@ -227,6 +226,7 @@ class PCADashboard(Dashboard):
         else:
             st.info("No food ingredients added yet.")
 
+        # Disposables
         if result["disposable_lines"]:
             st.subheader("📦 Disposables")
             st.dataframe(pd.DataFrame([{
@@ -238,6 +238,8 @@ class PCADashboard(Dashboard):
             st.caption(f"Total disposable cost: ${totals['total_disposable_cost']:.4f}")
 
         st.markdown("---")
+
+        # Add ingredient
         st.subheader("➕ Add Ingredient")
         all_items = self.db.get_all_items()
         if all_items:
@@ -262,6 +264,7 @@ class PCADashboard(Dashboard):
                     st.success(f"✅ Added {item_label}")
                     st.rerun()
 
+        # Recipe actions
         st.markdown("---")
         col1, col2, col3 = st.columns(3)
         with col1:
@@ -273,10 +276,15 @@ class PCADashboard(Dashboard):
             export = pca.export_pca_dict(selected_id)
             st.download_button("⬇️ Export JSON",
                 data=json.dumps(export, indent=2, default=str),
-                file_name=f"pca_{selected_id}.json", mime="application/json",
+                file_name=f"pca_{selected_id}.json",
+                mime="application/json",
                 use_container_width=True)
         with col3:
             if st.button("🗑️ Archive Recipe", use_container_width=True):
                 pca.delete_recipe(selected_id, soft=True)
                 st.success("Archived.")
                 st.rerun()
+
+    # ── end of render ─────────────────────────────────────────────────────────
+
+# ── end of PCADashboard ───────────────────────────────────────────────────────
