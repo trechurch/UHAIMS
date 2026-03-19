@@ -2,8 +2,8 @@
 UHA Inventory Management System
 Streamlit Community Cloud — app shell
 
-v5.1.0  —  VersionSyncer wired into sidebar badge + diagnostics panel.
-            database.py v2.1.0 (import_jobs table).
+v5.2.0  —  Hidden admin route: ?page=db_import
+            Calls database_sheet_importer.py directly.
 """
 
 import streamlit as st
@@ -19,7 +19,7 @@ from database import InventoryDatabase
 from registry import get_registry
 from version_syncer import VersionSyncer
 
-__version__ = "5.1.0"
+__version__ = "5.2.0"
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  BOOTSTRAP
@@ -44,6 +44,11 @@ def _handle_query_params(registry):
         st.rerun()
     if "page" in params:
         key = params["page"]
+        # Hidden admin routes — handled before registry lookup
+        if key == "db_import":
+            st.session_state.page_key = "db_import"
+            st.query_params.clear()
+            return
         if key in registry.page_keys():
             registry.on_navigate_away(st.session_state.page_key)
             st.session_state.prev_page_key = st.session_state.page_key
@@ -52,14 +57,13 @@ def _handle_query_params(registry):
         st.rerun()
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  VERSION BADGE  (sidebar — compact)
+#  VERSION BADGE
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _render_version_badge(registry):
     with st.sidebar:
         st.markdown("---")
         with st.expander("📦 Versions", expanded=False):
-            # Running versions
             try:
                 from database import InventoryDatabase as _IDB
                 db_ver = _IDB.SERVICE_MANIFEST.get("version", "?")
@@ -82,11 +86,11 @@ def _render_version_badge(registry):
                 reg_ver = "err"
 
             lines = [
-                ("app.py",     __version__),
-                ("base.py",    base_ver),
-                ("registry.py",reg_ver),
-                ("database.py",db_ver),
-                ("importer.py",imp_ver),
+                ("app.py",      __version__),
+                ("base.py",     base_ver),
+                ("registry.py", reg_ver),
+                ("database.py", db_ver),
+                ("importer.py", imp_ver),
             ]
             rows = "".join(
                 f"<b style='color:#4A4E55'>{n}</b>&nbsp;&nbsp;v{v}<br>"
@@ -134,11 +138,18 @@ def _render_sidebar(registry, syncer):
         labels = [f"{i['icon']}  {i['label']}" for i in items]
         keys   = [i["page_key"] for i in items]
 
+        # If we're on a hidden admin page, don't try to select it in the radio
+        current = st.session_state.page_key
+        if current not in keys and keys:
+            cur_idx = 0
+        elif current in keys:
+            cur_idx = keys.index(current)
+        else:
+            cur_idx = 0
+
         if not items:
             st.warning("No modules registered.")
         else:
-            cur_idx = keys.index(st.session_state.page_key) \
-                      if st.session_state.page_key in keys else 0
             chosen     = st.radio("Navigate", labels, index=cur_idx)
             chosen_key = keys[labels.index(chosen)]
             if chosen_key != st.session_state.page_key:
@@ -147,12 +158,11 @@ def _render_sidebar(registry, syncer):
                 st.session_state.page_key = chosen_key
                 st.rerun()
 
-    # Version badge + sync badge
     _render_version_badge(registry)
-    syncer.render_badge()   # shows 🔴 warning + Hot Reload button if drift detected
+    syncer.render_badge()
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  DIAGNOSTICS  (collapsed)
+#  DIAGNOSTICS
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _show_diagnostics(registry, syncer):
@@ -176,8 +186,34 @@ def _show_diagnostics(registry, syncer):
         syncer.render_panel()
 
 # ──────────────────────────────────────────────────────────────────────────────
+#  HIDDEN ADMIN PAGES
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _render_admin_page(page_key: str):
+    """
+    Hidden admin routes not registered in the module registry.
+    Access via ?page=<key> in URL.
+    """
+    if page_key == "db_import":
+        st.sidebar.markdown("---")
+        st.sidebar.warning("🔧 Admin: DB Import")
+        if st.sidebar.button("← Back to App"):
+            st.session_state.page_key = "dashboard"
+            st.rerun()
+        # Run the importer directly
+        try:
+            import database_sheet_importer  # noqa — runs the Streamlit UI
+        except Exception as exc:
+            import traceback
+            st.error(f"DB importer failed to load: {exc}")
+            st.code(traceback.format_exc())
+
+# ──────────────────────────────────────────────────────────────────────────────
 #  MAIN
 # ──────────────────────────────────────────────────────────────────────────────
+
+ADMIN_PAGES = {"db_import"}
+
 
 def main():
     _init()
@@ -187,8 +223,13 @@ def main():
 
     _handle_query_params(registry)
     _render_sidebar(registry, syncer)
-    _show_diagnostics(registry, syncer)
-    registry.dispatch(st.session_state.page_key)
+
+    # Route to admin page or normal module
+    if st.session_state.page_key in ADMIN_PAGES:
+        _render_admin_page(st.session_state.page_key)
+    else:
+        _show_diagnostics(registry, syncer)
+        registry.dispatch(st.session_state.page_key)
 
 
 if __name__ == "__main__":
