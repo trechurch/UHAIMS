@@ -4,6 +4,7 @@ Streamlit Community Cloud — app shell
 
 v5.2.3  —  Fix: sidebar radio no longer overwrites admin page_key.
             Admin pages bypass the radio selection entirely.
+v5.2.5  —  reverted to the v5.1.0 build, removing al calls to Admin function
 """
 
 import streamlit as st
@@ -19,7 +20,7 @@ from database import InventoryDatabase
 from registry import get_registry
 from version_syncer import VersionSyncer
 
-__version__ = "5.2.3"
+__version__ = "5.2.5"
 
 ADMIN_PAGES = {"db_import"}
 
@@ -132,16 +133,17 @@ def _render_sidebar(registry, syncer):
         labels = [f"{i['icon']}  {i['label']}" for i in items]
         keys   = [i["page_key"] for i in items]
 
-        # ── Key fix: if we're on an admin page, show nav but don't
-        #    let the radio overwrite the current page_key ────────────────────
-        if st.session_state.page_key in ADMIN_PAGES:
-            # Show nav as read-only context, default to first item
-            st.radio("Navigate", labels, index=0, disabled=True)
-            st.markdown("---")
-            st.warning("🔧 Admin mode")
-            if st.button("← Back to App"):
-                st.session_state.page_key = "dashboard"
-                st.rerun()
+                    # ── Key fix: if we're on an admin page, show nav but don't
+                    #    let the radio overwrite the current page_key ────────────────────
+                         # ──if st.session_state.page_key in ADMIN_PAGES:
+                        # ──  Show nav as read-only context, default to first item
+            # ──st.radio("Navigate", labels, index=0, disabled=True)
+           # ── st.markdown("---")
+            # ──st.warning("🔧 Admin mode")
+          # ──  if st.button("← Back to App"):
+                
+st.session_state.page_key = "dashboard"
+    st.rerun()
         else:
             current = st.session_state.page_key
             cur_idx = keys.index(current) if current in keys else 0
@@ -183,39 +185,29 @@ def _show_diagnostics(registry, syncer):
 # ──────────────────────────────────────────────────────────────────────────────
 #  ADMIN PAGES
 # ──────────────────────────────────────────────────────────────────────────────
-
-def _render_admin_page(page_key: str):
-    if page_key == "db_import":
-        try:
-            import database_sheet_importer
-            database_sheet_importer.render()
-        except Exception as exc:
-            import traceback
-            st.error(f"DB importer failed to load: {exc}")
-            st.code(traceback.format_exc())
-
+# ──
+# ──def _render_admin_page(page_key: str):
+# ──    if page_key == "db_import":
+# ──        try:
+# ──            import database_sheet_importer
+# ──            database_sheet_importer.render()
+# ──        except Exception as exc:
+# ──            import traceback
+# ──            st.error(f"DB importer failed to load: {exc}")
+# ──            st.code(traceback.format_exc())
+# ──
 # ──────────────────────────────────────────────────────────────────────────────
 #  MAIN
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main():
-    _read_query_params()
     _init()
-
     db       = get_db()
     registry = get_registry(_db=db)
     syncer   = VersionSyncer(registry=registry, repo="trechurch/UHAIMS")
-
+    _handle_query_params(registry)
     _render_sidebar(registry, syncer)
-
-    if st.session_state.page_key in ADMIN_PAGES:
-        _render_admin_page(st.session_state.page_key)
-    else:
-        _show_diagnostics(registry, syncer)
-        registry.dispatch(st.session_state.page_key)
-
-
-if __name__ == "__main__":
-    main()
+    _show_diagnostics(registry, syncer)
+    registry.dispatch(st.session_state.page_key)
 
 # ── end of app.py ─────────────────────────────────────────────────────────────
