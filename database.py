@@ -60,7 +60,7 @@ class InventoryDatabase:
     SERVICE_MANIFEST = {
         "id":          "database",
         "label":       "Inventory Database",
-        "version":     "2.1.0",
+        "version":     "2.1.1",
         "type":        "service",
         "backend":     "supabase_postgresql",
         "connection":  "session_pooler",
