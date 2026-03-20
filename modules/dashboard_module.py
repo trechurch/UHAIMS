@@ -25,7 +25,7 @@ class DatabaseDashboard(Dashboard):
     MANIFEST = {
         "id":       "dashboard_module",
         "label":    "Dashboard",
-        "version":  "1.0.1",
+        "version":  "1.1.1",
         "icon":     "🏠",
         "status":   "active",
         "page_key": "dashboard",
