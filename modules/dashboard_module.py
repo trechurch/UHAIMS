@@ -160,6 +160,11 @@ class DatabaseDashboard(Dashboard):
                     st.info("No inventory items found.")
             except Exception as exc:
                 st.warning(f"Could not load recent items: {exc}")
+                st.markdown("---")
+        with st.expander("🔧 Admin Tools"):
+            if st.button("📋 Open Database Sheet Importer"):
+                st.session_state.page_key = "db_import"
+                st.rerun()
 
     # ── end of render ─────────────────────────────────────────────────────────
 
