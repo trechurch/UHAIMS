@@ -374,9 +374,18 @@ class InventoryDatabase:
     def get_inventory_value(self) -> float:
         with get_conn() as conn:
             cur = conn.cursor()
-            cur.execute(
-                "SELECT SUM(quantity_on_hand * cost) FROM items WHERE record_status = 'active'"
-            )
+            cur.execute("""
+                SELECT SUM(
+                    quantity_on_hand *
+                    CASE
+                        WHEN per = 'Case' AND COALESCE(conv_ratio, 1) > 1
+                        THEN cost / conv_ratio
+                        ELSE cost
+                    END
+                )
+                FROM items
+                WHERE record_status = 'active'
+            """)
             result = cur.fetchone()[0]
             return float(result) if result else 0.0
 
