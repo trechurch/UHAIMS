@@ -371,7 +371,7 @@ class InventoryDatabase:
             """)
             return [dict(r) for r in cur.fetchall()]
 
-def get_inventory_value(self) -> float:
+     def get_inventory_value(self) -> float:
         with get_conn() as conn:
             cur = conn.cursor()
             cur.execute("""
