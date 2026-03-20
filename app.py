@@ -2,8 +2,8 @@
 UHA Inventory Management System
 Streamlit Community Cloud — app shell
 
-v5.2.2  —  Fix: query params read BEFORE _init() so admin routes
-            survive the fresh session on URL navigation.
+v5.2.3  —  Fix: sidebar radio no longer overwrites admin page_key.
+            Admin pages bypass the radio selection entirely.
 """
 
 import streamlit as st
@@ -19,12 +19,12 @@ from database import InventoryDatabase
 from registry import get_registry
 from version_syncer import VersionSyncer
 
-__version__ = "5.2.2"
+__version__ = "5.2.3"
 
 ADMIN_PAGES = {"db_import"}
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  BOOTSTRAP  —  query params resolved FIRST before session defaults
+#  BOOTSTRAP
 # ──────────────────────────────────────────────────────────────────────────────
 
 @st.cache_resource
@@ -33,12 +33,7 @@ def get_db():
 
 
 def _init():
-    """
-    Set session state defaults — but respect any page already set
-    by _read_query_params() which runs before this.
-    """
     if "page_key"      not in st.session_state:
-        # Check URL param one more time as fallback
         url_page = st.query_params.get("page", "dashboard")
         st.session_state.page_key = url_page if url_page else "dashboard"
     if "prev_page_key" not in st.session_state:
@@ -48,32 +43,12 @@ def _init():
 
 
 def _read_query_params():
-    """
-    Read and consume query params at the very start of the script,
-    before session state defaults are applied.
-    This runs on every script execution including fresh sessions.
-    """
     params = st.query_params
     if not params:
         return
-
-    if "toggle_nav" in params:
-        # Will be handled after session init
-        return
-
     if "page" in params:
-        key = params["page"]
-        # Write to session state now — before _init() can overwrite with default
-        st.session_state.page_key = key
-        # Clear the param so it doesn't persist in the URL
+        st.session_state.page_key = params["page"]
         st.query_params.clear()
-
-
-def _handle_remaining_params(registry):
-    """Handle params that need registry to be available (toggle_nav)."""
-    # toggle_nav was already in URL before we cleared — check session flag
-    pass
-
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  VERSION BADGE
@@ -157,28 +132,25 @@ def _render_sidebar(registry, syncer):
         labels = [f"{i['icon']}  {i['label']}" for i in items]
         keys   = [i["page_key"] for i in items]
 
-        current = st.session_state.page_key
-        if current in keys:
-            cur_idx = keys.index(current)
+        # ── Key fix: if we're on an admin page, show nav but don't
+        #    let the radio overwrite the current page_key ────────────────────
+        if st.session_state.page_key in ADMIN_PAGES:
+            # Show nav as read-only context, default to first item
+            st.radio("Navigate", labels, index=0, disabled=True)
+            st.markdown("---")
+            st.warning("🔧 Admin mode")
+            if st.button("← Back to App"):
+                st.session_state.page_key = "dashboard"
+                st.rerun()
         else:
-            cur_idx = 0
-
-        if not items:
-            st.warning("No modules registered.")
-        else:
+            current = st.session_state.page_key
+            cur_idx = keys.index(current) if current in keys else 0
             chosen     = st.radio("Navigate", labels, index=cur_idx)
             chosen_key = keys[labels.index(chosen)]
             if chosen_key != st.session_state.page_key:
                 registry.on_navigate_away(st.session_state.page_key)
                 st.session_state.prev_page_key = st.session_state.page_key
                 st.session_state.page_key = chosen_key
-                st.rerun()
-
-        if st.session_state.page_key in ADMIN_PAGES:
-            st.markdown("---")
-            st.warning("🔧 Admin mode")
-            if st.button("← Back to App"):
-                st.session_state.page_key = "dashboard"
                 st.rerun()
 
     _render_version_badge(registry)
@@ -227,18 +199,13 @@ def _render_admin_page(page_key: str):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main():
-    # Step 1 — consume query params BEFORE session defaults
     _read_query_params()
-
-    # Step 2 — apply session defaults (won't overwrite page_key if already set)
     _init()
 
-    # Step 3 — wire up services
     db       = get_db()
     registry = get_registry(_db=db)
     syncer   = VersionSyncer(registry=registry, repo="trechurch/UHAIMS")
 
-    # Step 4 — render
     _render_sidebar(registry, syncer)
 
     if st.session_state.page_key in ADMIN_PAGES:
