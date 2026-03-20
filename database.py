@@ -371,14 +371,15 @@ class InventoryDatabase:
             """)
             return [dict(r) for r in cur.fetchall()]
 
-    def get_inventory_value(self) -> float:
+def get_inventory_value(self) -> float:
         with get_conn() as conn:
             cur = conn.cursor()
             cur.execute("""
                 SELECT SUM(
                     quantity_on_hand *
                     CASE
-                        WHEN per = 'Case' AND COALESCE(conv_ratio, 1) > 1
+                        WHEN LOWER(COALESCE(per, 'case')) = 'case'
+                         AND COALESCE(conv_ratio, 1) > 1
                         THEN cost / conv_ratio
                         ELSE cost
                     END
