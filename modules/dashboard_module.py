@@ -4,7 +4,7 @@
 #  GOLD STANDARD — this is the reference every new module copies.
 #  Pattern: MANIFEST → DOCS → sidebar() → on_load() → render()
 #
-#  v1.0.0
+#  v1.0.1
 # ──────────────────────────────────────────────────────────────────────────────
 
 import pandas as pd
@@ -25,7 +25,7 @@ class DatabaseDashboard(Dashboard):
     MANIFEST = {
         "id":       "dashboard_module",
         "label":    "Dashboard",
-        "version":  "1.0.0",
+        "version":  "1.0.1",
         "icon":     "🏠",
         "status":   "active",
         "page_key": "dashboard",
@@ -83,6 +83,11 @@ class DatabaseDashboard(Dashboard):
             "Last Updated metric shows today's date rather than the actual last DB write timestamp.",
         ],
         "changelog": [
+            {
+                "version": "1.0.1",
+                "date":    "2026-03-19",
+                "note":    "Added Admin Tools expander with DB importer button.",
+            },
             {
                 "version": "1.0.0",
                 "date":    "2026-03-17",
@@ -160,7 +165,9 @@ class DatabaseDashboard(Dashboard):
                     st.info("No inventory items found.")
             except Exception as exc:
                 st.warning(f"Could not load recent items: {exc}")
-                st.markdown("---")
+
+        # ── Admin tools ───────────────────────────────────────────────────────
+        st.markdown("---")
         with st.expander("🔧 Admin Tools"):
             if st.button("📋 Open Database Sheet Importer"):
                 st.session_state.page_key = "db_import"
