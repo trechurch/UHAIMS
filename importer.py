@@ -1,7 +1,8 @@
 """
 UHA IMS — Inventory Importer Service
-v2.6.0  —  analyze_import_with_cache added as proper class method.
-            Dashboard can now isolate DB load from analysis loop.
+v2.7.0  —  Conv ratio now parsed from pack type string via pack_parser.
+            Ambiguous rows flagged with confidence + reason.
+            analyze_import returns 'flagged' bucket for review UI.
 """
 
 import re
@@ -10,6 +11,8 @@ import pandas as pd
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
+
+from pack_parser import parse_pack
 
 SKIP_PHRASES = [
     "PROPERTY OF COMPASS GROUP", "PRINTED BY", "BILL TO",
@@ -50,6 +53,9 @@ COL_MAP = {
     'MFG':              'brand',       'GTIN':       'gtin',
     'STATUS':           'status',      'CONFIRMATION STATUS': 'status',
     'CATEGORY':         'category',    'DELIVERY DATE': 'delivery_date',
+    'PER':              'per',
+    'CONV. RATIO':      'conv_ratio_raw', 'CONV RATIO': 'conv_ratio_raw',
+    'YIELD':            'yield_raw',
 }
 
 
@@ -169,7 +175,7 @@ class InventoryImporter:
     SERVICE_MANIFEST = {
         "id":      "importer",
         "label":   "Inventory Importer",
-        "version": "2.6.0",
+        "version": "2.7.0",
         "type":    "service",
         "supported_formats": ["CSV", "XLSX", "XLS"],
         "depends_on": ["database"],
@@ -188,13 +194,15 @@ class InventoryImporter:
         "summary": "Parses vendor invoice and count sheet CSV/XLSX files.",
         "usage":   "Instantiate with InventoryDatabase. Call read_file() -> analyze_import() -> execute_import().",
         "demo_ready": True,
-        "notes": "v2.6.0: analyze_import_with_cache is a proper class method.",
+        "notes": (
+            "v2.7.0: conv_ratio now parsed from pack type string via pack_parser. "
+            "Ambiguous rows returned in 'flagged' bucket for user review before commit."
+        ),
         "known_issues": ["PAC inventory PDF import not yet ported."],
         "changelog": [
+            {"version": "2.7.0", "date": "2026-03-20", "note": "conv_ratio parsing via pack_parser. Flagged bucket added."},
             {"version": "2.6.0", "date": "2026-03-18", "note": "analyze_import_with_cache as proper class method."},
             {"version": "2.5.0", "date": "2026-03-18", "note": "Fully in-memory analysis."},
-            {"version": "2.4.0", "date": "2026-03-18", "note": "Batch key lookup."},
-            {"version": "2.3.0", "date": "2026-03-18", "note": "Post-normalization column dedup."},
         ],
     }
 
@@ -241,7 +249,6 @@ class InventoryImporter:
         return pd.read_csv(filepath, encoding='latin-1', header=None, encoding_errors='replace', dtype=str)
 
     def _load_all_items(self) -> Dict[str, dict]:
-        """Fetch entire item table in ONE query. Returns dict keyed by item key."""
         try:
             items = self.db.get_all_items(record_status=None)
             return {i["key"]: i for i in items if i.get("key")}
@@ -249,12 +256,12 @@ class InventoryImporter:
             return {}
 
     def _analyze_loop(self, df: pd.DataFrame, existing: Dict[str, dict]) -> Dict:
-        """Core analysis loop — pure Python, zero DB calls."""
         analysis = {
             'total_rows': len(df),
             'new_items':  [],
             'updates':    [],
             'skipped':    [],
+            'flagged':    [],   # ← new: needs review before commit
             'errors':     [],
         }
         for idx, row in df.iterrows():
@@ -271,40 +278,79 @@ class InventoryImporter:
             if not description:
                 analysis['skipped'].append(idx)
                 continue
+
             pack_raw  = _scalar(row.get('pack_type')) or ''
             pack_norm = normalize_pack_type(pack_raw)
             key       = build_key(description, pack_norm)
             if not key:
                 analysis['errors'].append(f"Row {idx + 1}: Could not build key")
                 continue
-            item_data = self._prepare_row(row, key, pack_norm)
+
+            # ── Parse conv_ratio from pack type ──────────────────────────
+            per_raw = _scalar(row.get('per')) or 'Case'
+            existing_conv = None
+            if key in existing:
+                existing_conv = existing[key].get('conv_ratio')
+            conv_ratio, conv_unit, confidence, flag_reason = parse_pack(
+                pack_raw, per_raw, existing_conv
+            )
+
+            item_data = self._prepare_row(row, key, pack_norm, conv_ratio, conv_unit)
+
+            # ── Flag low-confidence rows ──────────────────────────────────
+            if confidence == 'low':
+                analysis['flagged'].append({
+                    'key':         key,
+                    'description': description,
+                    'row_idx':     idx + 1,
+                    'pack_type':   pack_raw,
+                    'conv_ratio':  conv_ratio,
+                    'flag_reason': flag_reason,
+                    'row_data':    item_data,
+                })
+                continue  # don't auto-commit flagged rows
+
             if key in existing:
                 current = existing[key]
                 changes = {
                     f: {'old': current.get(f), 'new': item_data.get(f)}
-                    for f in ('cost', 'pack_type', 'vendor', 'gl_code')
+                    for f in ('cost', 'pack_type', 'vendor', 'gl_code', 'conv_ratio')
                     if item_data.get(f) is not None
                     and str(current.get(f)) != str(item_data.get(f))
                 }
-                analysis['updates'].append({'key': key, 'description': description, 'changes': changes, 'row_data': item_data})
+                analysis['updates'].append({
+                    'key':         key,
+                    'description': description,
+                    'changes':     changes,
+                    'confidence':  confidence,
+                    'flag_reason': flag_reason,
+                    'row_data':    item_data,
+                })
             else:
-                analysis['new_items'].append({'key': key, 'description': description, 'row_data': item_data})
+                analysis['new_items'].append({
+                    'key':         key,
+                    'description': description,
+                    'confidence':  confidence,
+                    'flag_reason': flag_reason,
+                    'row_data':    item_data,
+                })
         return analysis
 
     def analyze_import(self, df: pd.DataFrame) -> Dict:
-        """Full pipeline: load items from DB then analyze."""
         existing = self._load_all_items()
         return self._analyze_loop(df, existing)
 
-    def analyze_import_with_cache(self, df: pd.DataFrame, existing: Dict[str, dict]) -> Dict:
-        """Analysis with pre-loaded items dict — DB load already done by caller."""
+    def analyze_import_with_cache(self, df: pd.DataFrame,
+                                   existing: Dict[str, dict]) -> Dict:
         return self._analyze_loop(df, existing)
 
     def execute_import(self, analysis: Dict,
                        changed_by: str = "import",
                        source_document: str = None,
                        doc_date: str = None) -> Dict:
-        results = {'new_items_added': 0, 'items_updated': 0, 'errors': []}
+        results = {'new_items_added': 0, 'items_updated': 0,
+                   'flagged_skipped': len(analysis.get('flagged', [])),
+                   'errors': []}
         for item in analysis['new_items']:
             try:
                 if self.db.add_item(item['row_data'], changed_by=changed_by):
@@ -321,6 +367,26 @@ class InventoryImporter:
                 )
                 if result in ('updated', 'created'):
                     results['items_updated'] += 1
+            except Exception as exc:
+                results['errors'].append(f"{item['key']}: {exc}")
+        return results
+
+    def execute_flagged(self, flagged_items: List[Dict],
+                        changed_by: str = "import",
+                        source_document: str = None,
+                        doc_date: str = None) -> Dict:
+        """Commit flagged items after user review/correction."""
+        results = {'added': 0, 'updated': 0, 'errors': []}
+        for item in flagged_items:
+            try:
+                r = self.db.upsert_item(
+                    item['row_data'],
+                    doc_date=doc_date,
+                    source_document=source_document,
+                    changed_by=changed_by,
+                )
+                if r == 'created':  results['added']   += 1
+                elif r == 'updated': results['updated'] += 1
             except Exception as exc:
                 results['errors'].append(f"{item['key']}: {exc}")
         return results
@@ -343,19 +409,47 @@ class InventoryImporter:
             return analysis, results
         return analysis, {}
 
-    def _prepare_row(self, row, key: str, pack_norm: str) -> Dict:
+    def _prepare_row(self, row, key: str, pack_norm: str,
+                     conv_ratio: float = 1.0,
+                     conv_unit: str = "Each") -> Dict:
         item = {
             'key':         key,
             'description': (_scalar(row.get('description')) or '').upper(),
             'pack_type':   pack_norm,
+            'conv_ratio':  conv_ratio,
+            'unit':        conv_unit,
         }
         cost = clean_price(row.get('cost'))
         if cost is not None:
             item['cost'] = cost
+            # Compute and store unit_cost immediately
+            if conv_ratio and conv_ratio > 0:
+                per = (_scalar(row.get('per')) or 'Case').strip().lower()
+                item['unit_cost'] = cost / conv_ratio if per == 'case' else cost
+            else:
+                item['unit_cost'] = cost
+
+        per = _scalar(row.get('per'))
+        if per:
+            item['per'] = per
+
+        # Yield from file if present
+        yield_raw = _scalar(row.get('yield_raw'))
+        if yield_raw:
+            try:
+                y = float(re.sub(r'[^\d.]', '', yield_raw))
+                if 0 < y <= 1:
+                    item['yield'] = y
+                elif 1 < y <= 100:
+                    item['yield'] = y / 100.0
+            except (ValueError, TypeError):
+                pass
+
         for field in ('vendor', 'item_number', 'mog', 'brand', 'gtin'):
             val = _scalar(row.get(field))
             if val:
                 item[field] = val
+
         gl_raw = _scalar(row.get('gl_field')) or _scalar(row.get('gl_code'))
         if gl_raw:
             gl_name, gl_code = split_gl_field(gl_raw)
@@ -364,6 +458,7 @@ class InventoryImporter:
                 item['gl_name'] = gl_name
             elif gl_name:
                 item['gl_code'] = gl_name
+
         qty_raw = _scalar(row.get('quantity'))
         if qty_raw:
             try:
