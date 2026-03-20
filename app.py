@@ -132,15 +132,6 @@ def _render_sidebar(registry, syncer):
         items  = registry.sidebar_items()
         labels = [f"{i['icon']}  {i['label']}" for i in items]
         keys   = [i["page_key"] for i in items]
-
-                    # ── Key fix: if we're on an admin page, show nav but don't
-                    #    let the radio overwrite the current page_key ────────────────────
-                         # ──if st.session_state.page_key in ADMIN_PAGES:
-                        # ──  Show nav as read-only context, default to first item
-            # ──st.radio("Navigate", labels, index=0, disabled=True)
-           # ── st.markdown("---")
-            # ──st.warning("🔧 Admin mode")
-          # ──  if st.button("← Back to App"):
                 
 st.session_state.page_key = "dashboard"
     st.rerun()
