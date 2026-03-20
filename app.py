@@ -2,9 +2,8 @@
 UHA Inventory Management System
 Streamlit Community Cloud — app shell
 
-v5.2.3  —  Fix: sidebar radio no longer overwrites admin page_key.
-            Admin pages bypass the radio selection entirely.
-v5.2.5  —  reverted to the v5.1.0 build, removing al calls to Admin function
+v5.3.0  —  Clean revert to stable v5.1.0 architecture.
+            All admin route code removed.
 """
 
 import streamlit as st
@@ -20,9 +19,7 @@ from database import InventoryDatabase
 from registry import get_registry
 from version_syncer import VersionSyncer
 
-__version__ = "5.2.5"
-
-ADMIN_PAGES = {"db_import"}
+__version__ = "5.3.0"
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  BOOTSTRAP
@@ -34,22 +31,25 @@ def get_db():
 
 
 def _init():
-    if "page_key"      not in st.session_state:
-        url_page = st.query_params.get("page", "dashboard")
-        st.session_state.page_key = url_page if url_page else "dashboard"
-    if "prev_page_key" not in st.session_state:
-        st.session_state.prev_page_key = None
-    if "show_top_nav"  not in st.session_state:
-        st.session_state.show_top_nav  = True
+    if "page_key"      not in st.session_state: st.session_state.page_key      = "dashboard"
+    if "prev_page_key" not in st.session_state: st.session_state.prev_page_key = None
+    if "show_top_nav"  not in st.session_state: st.session_state.show_top_nav  = True
 
 
-def _read_query_params():
+def _handle_query_params(registry):
     params = st.query_params
-    if not params:
-        return
-    if "page" in params:
-        st.session_state.page_key = params["page"]
+    if "toggle_nav" in params:
+        st.session_state.show_top_nav = not st.session_state.show_top_nav
         st.query_params.clear()
+        st.rerun()
+    if "page" in params:
+        key = params["page"]
+        if key in registry.page_keys():
+            registry.on_navigate_away(st.session_state.page_key)
+            st.session_state.prev_page_key = st.session_state.page_key
+            st.session_state.page_key = key
+        st.query_params.clear()
+        st.rerun()
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  VERSION BADGE
@@ -132,12 +132,12 @@ def _render_sidebar(registry, syncer):
         items  = registry.sidebar_items()
         labels = [f"{i['icon']}  {i['label']}" for i in items]
         keys   = [i["page_key"] for i in items]
-                
-st.session_state.page_key = "dashboard"
-    st.rerun()
+
+        if not items:
+            st.warning("No modules registered.")
         else:
-            current = st.session_state.page_key
-            cur_idx = keys.index(current) if current in keys else 0
+            cur_idx = keys.index(st.session_state.page_key) \
+                      if st.session_state.page_key in keys else 0
             chosen     = st.radio("Navigate", labels, index=cur_idx)
             chosen_key = keys[labels.index(chosen)]
             if chosen_key != st.session_state.page_key:
@@ -174,20 +174,6 @@ def _show_diagnostics(registry, syncer):
         syncer.render_panel()
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  ADMIN PAGES
-# ──────────────────────────────────────────────────────────────────────────────
-# ──
-# ──def _render_admin_page(page_key: str):
-# ──    if page_key == "db_import":
-# ──        try:
-# ──            import database_sheet_importer
-# ──            database_sheet_importer.render()
-# ──        except Exception as exc:
-# ──            import traceback
-# ──            st.error(f"DB importer failed to load: {exc}")
-# ──            st.code(traceback.format_exc())
-# ──
-# ──────────────────────────────────────────────────────────────────────────────
 #  MAIN
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -200,5 +186,9 @@ def main():
     _render_sidebar(registry, syncer)
     _show_diagnostics(registry, syncer)
     registry.dispatch(st.session_state.page_key)
+
+
+if __name__ == "__main__":
+    main()
 
 # ── end of app.py ─────────────────────────────────────────────────────────────
