@@ -25,7 +25,7 @@ class DatabaseDashboard(Dashboard):
     MANIFEST = {
         "id":       "dashboard_module",
         "label":    "Dashboard",
-        "version":  "1.1.1",
+        "version":  "1.2.0",
         "icon":     "🏠",
         "status":   "active",
         "page_key": "dashboard",
@@ -167,11 +167,12 @@ class DatabaseDashboard(Dashboard):
                 st.warning(f"Could not load recent items: {exc}")
 
         # ── Admin tools ───────────────────────────────────────────────────────
-        st.markdown("---")
-        with st.expander("🔧 Admin Tools"):
-            if st.button("📋 Open Database Sheet Importer"):
-                st.session_state.page_key = "db_import"
-                st.rerun()
+            #- st.markdown("---")
+                 #- swith st.expander("🔧 Admin Tools"):
+                    #- sif st.button("📋 Open Database Sheet Importer"):
+                     #- sst.session_state.page_key = "db_import"
+                 #- sst.rerun()    
+        # ── end of Admin tools ─────────────────────────────────────────────
 
     # ── end of render ─────────────────────────────────────────────────────────
 
