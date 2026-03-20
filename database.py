@@ -2,7 +2,7 @@
 UHA IMS — Inventory Database Service
 PostgreSQL / Supabase backend
 
-v2.1.0  —  import_jobs table added to create_tables().
+v2.1.1  —  import_jobs table added to create_tables().
             New job tracker methods:
               create_job(), update_job(), get_job(), get_recent_jobs(),
               get_active_jobs(), fail_job()
