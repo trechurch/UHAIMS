@@ -1,6 +1,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 #  modules/inventory_browser.py  —  Inventory Browser & Editor
-#  v1.1.0  —  Clean scrollable list, click to select, no buttons/boxes.
+#  v1.2.0  —  Single scrollable dataframe list. Select via dropdown above
+#              detail panel. No per-row buttons.
 # ──────────────────────────────────────────────────────────────────────────────
 
 import streamlit as st
@@ -14,7 +15,7 @@ class InventoryBrowser(Dashboard):
     MANIFEST = {
         "id":       "inventory_browser",
         "label":    "Inventory",
-        "version":  "1.1.0",
+        "version":  "1.2.0",
         "icon":     "🗃️",
         "status":   "active",
         "page_key": "inventory",
@@ -38,19 +39,18 @@ class InventoryBrowser(Dashboard):
             "Edit any field inline",
             "Set and clear field-level overrides",
             "View full change history per item",
-            "View price history per item",
         ],
         "permissions": {"min_role": "user"},
     }
 
     DOCS = {
         "summary": "Browse, search, and edit the full inventory database.",
-        "usage": "Search or filter on the left. Click an item to view details on the right.",
+        "usage": "Search/filter the list. Select an item from the dropdown to view details.",
         "demo_ready": True,
-        "notes": "v1.1.0: Clean scrollable list, click to select.",
+        "notes": "v1.2.0: Single dataframe list + dropdown selector.",
         "known_issues": [],
         "changelog": [
-            {"version": "1.1.0", "date": "2026-03-20", "note": "Clean list UI, no select buttons."},
+            {"version": "1.2.0", "date": "2026-03-20", "note": "Dataframe list + dropdown selector."},
             {"version": "1.0.0", "date": "2026-03-20", "note": "Initial implementation."},
         ],
     }
@@ -66,21 +66,15 @@ class InventoryBrowser(Dashboard):
             st.markdown("**🗃️ Inventory**")
             st.caption("Browse · Search · Edit")
 
+    # ── Render ────────────────────────────────────────────────────────────────
+
     def render(self) -> None:
         st.title("🗃️ Inventory Browser")
-        left, right = st.columns([2, 3], gap="medium")
-        with left:
-            self._render_list_panel()
-        with right:
-            self._render_detail_panel()
 
-    # ── Left Panel ────────────────────────────────────────────────────────────
-
-    def _render_list_panel(self):
-        # Search + filters
-        search = st.text_input("🔍", placeholder="Search name, vendor, GL...",
-                               key="ib_search", label_visibility="collapsed")
-
+        # ── Search + filters (top bar) ────────────────────────────────────
+        fc1, fc2, fc3 = st.columns([3, 2, 2])
+        search     = fc1.text_input("🔍 Search", placeholder="Name, vendor, GL...",
+                                    key="ib_search", label_visibility="collapsed")
         with st.spinner(""):
             if search and len(search) >= 2:
                 items = self.db.search_items(search)
@@ -91,60 +85,62 @@ class InventoryBrowser(Dashboard):
             st.info("No items found.")
             return
 
-        fc1, fc2 = st.columns(2)
-        gl_codes = sorted(set(i.get("gl_code") or "" for i in items if i.get("gl_code")))
-        vendors  = sorted(set(i.get("vendor")   or "" for i in items if i.get("vendor")))
-
-        gl_filter  = fc1.selectbox("GL",     ["All"] + gl_codes, key="ib_gl",
+        gl_codes   = sorted(set(i.get("gl_code") or "" for i in items if i.get("gl_code")))
+        vendors    = sorted(set(i.get("vendor")   or "" for i in items if i.get("vendor")))
+        gl_filter  = fc2.selectbox("GL",     ["All"] + gl_codes, key="ib_gl",
                                    label_visibility="collapsed")
-        vnd_filter = fc2.selectbox("Vendor", ["All"] + vendors,  key="ib_vnd",
+        vnd_filter = fc3.selectbox("Vendor", ["All"] + vendors,  key="ib_vnd",
                                    label_visibility="collapsed")
 
         if gl_filter  != "All": items = [i for i in items if i.get("gl_code") == gl_filter]
         if vnd_filter != "All": items = [i for i in items if i.get("vendor")   == vnd_filter]
 
-        selected = st.session_state.get("ib_selected_key")
-        st.caption(f"{len(items)} items · click to select")
+        # ── Two columns: list + detail ────────────────────────────────────
+        left, right = st.columns([2, 3], gap="medium")
 
-        # Build dataframe for the list
-        list_data = []
-        for item in items:
-            cost  = float(item.get("cost") or 0)
-            conv  = float(item.get("conv_ratio") or 1)
-            uc    = cost / conv if conv > 1 else cost
-            list_data.append({
-                "_key":       item["key"],
-                "Description": (item.get("description") or item["key"].split("||")[0])[:40],
-                "Pack":        item.get("pack_type") or "",
-                "Unit Cost":   f"${uc:.4f}",
-                "On Hand":     f"{float(item.get('quantity_on_hand') or 0):.1f}",
-                "Vendor":      (item.get("vendor") or "")[:18],
-            })
+        with left:
+            st.caption(f"{len(items)} items")
 
-        df = pd.DataFrame(list_data)
+            # Build display dataframe
+            rows = []
+            keys = []
+            for item in items:
+                cost = float(item.get("cost") or 0)
+                conv = float(item.get("conv_ratio") or 1)
+                uc   = cost / conv if conv > 1 else cost
+                qty  = float(item.get("quantity_on_hand") or 0)
+                rows.append({
+                    "Description": (item.get("description") or "")[:38],
+                    "Pack":        (item.get("pack_type") or "")[:14],
+                    "$/ea":        f"${uc:.3f}",
+                    "Qty":         f"{qty:.0f}",
+                })
+                keys.append(item["key"])
 
-        # Use dataframe with on_select for click-to-select
-        event = st.dataframe(
-            df.drop(columns=["_key"]),
-            use_container_width=True,
-            hide_index=True,
-            height=600,
-            on_select="rerun",
-            selection_mode="single-row",
-            key="ib_table",
-        )
+            df = pd.DataFrame(rows)
+            st.dataframe(df, use_container_width=True,
+                         hide_index=True, height=550)
 
-        # Handle selection
-        sel_rows = event.selection.get("rows", []) if event and event.selection else []
-        if sel_rows:
-            idx = sel_rows[0]
-            new_key = list_data[idx]["_key"]
-            if new_key != st.session_state.get("ib_selected_key"):
-                st.session_state["ib_selected_key"] = new_key
-                st.session_state["ib_edit_mode"] = False
-                st.rerun()
+            # Selector below the list
+            st.markdown("**Select item:**")
+            desc_labels = [r["Description"] for r in rows]
+            sel_idx = st.selectbox(
+                "Item", range(len(desc_labels)),
+                format_func=lambda i: desc_labels[i],
+                key="ib_sel_idx",
+                label_visibility="collapsed"
+            )
+            if sel_idx is not None:
+                new_key = keys[sel_idx]
+                if new_key != st.session_state.get("ib_selected_key"):
+                    st.session_state["ib_selected_key"] = new_key
+                    st.session_state["ib_edit_mode"] = False
+                    st.rerun()
 
-    # ── Right Panel ───────────────────────────────────────────────────────────
+        with right:
+            self._render_detail_panel()
+
+    # ── Detail Panel ──────────────────────────────────────────────────────────
 
     def _render_detail_panel(self):
         key = st.session_state.get("ib_selected_key")
@@ -188,13 +184,13 @@ class InventoryBrowser(Dashboard):
         cost = float(item.get("cost") or 0)
         conv = float(item.get("override_conv_ratio") or item.get("conv_ratio") or 1)
         yld  = float(item.get("override_yield")      or item.get("yield")      or 1)
-        unit_cost = cost / conv if conv > 1 else cost
-        ep_cost   = unit_cost / yld if yld > 0 else unit_cost
+        uc   = cost / conv if conv > 1 else cost
+        epc  = uc / yld if yld > 0 else uc
 
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Invoice Cost", f"${cost:.4f}")
-        c2.metric("Unit Cost",    f"${unit_cost:.4f}")
-        c3.metric("EP Cost",      f"${ep_cost:.4f}")
+        c2.metric("Unit Cost",    f"${uc:.4f}")
+        c3.metric("EP Cost",      f"${epc:.4f}")
         c4.metric("On Hand",      f"{float(item.get('quantity_on_hand') or 0):.1f}")
 
         st.markdown("---")
@@ -202,23 +198,23 @@ class InventoryBrowser(Dashboard):
 
         with tab1:
             rows = [
-                ("Pack Type",   item.get("pack_type")    or "—"),
-                ("Per",         item.get("per")          or "—"),
+                ("Pack Type",   item.get("pack_type")   or "—"),
+                ("Per",         item.get("per")         or "—"),
                 ("Conv Ratio",  f"{conv:.4f}"),
                 ("Yield %",     f"{yld*100:.1f}%"),
-                ("Unit",        item.get("unit")         or "—"),
-                ("Vendor",      item.get("vendor")       or "—"),
-                ("Item #",      item.get("item_number")  or "—"),
-                ("MOG",         item.get("mog")          or "—"),
-                ("GL Code",     item.get("gl_code")      or "—"),
-                ("GL Name",     item.get("gl_name")      or "—"),
-                ("Cost Center", item.get("cost_center")  or "—"),
+                ("Unit",        item.get("unit")        or "—"),
+                ("Vendor",      item.get("vendor")      or "—"),
+                ("Item #",      item.get("item_number") or "—"),
+                ("MOG",         item.get("mog")         or "—"),
+                ("GL Code",     item.get("gl_code")     or "—"),
+                ("GL Name",     item.get("gl_name")     or "—"),
+                ("Cost Center", item.get("cost_center") or "—"),
                 ("Chargeable",  "✅ Yes" if item.get("is_chargeable") else "❌ No"),
-                ("Status Tag",  item.get("status_tag")   or "—"),
+                ("Status Tag",  item.get("status_tag")  or "—"),
                 ("Last Updated",str(item.get("last_updated") or "—")[:19]),
             ]
             st.dataframe(pd.DataFrame(rows, columns=["Field", "Value"]),
-                        use_container_width=True, hide_index=True)
+                         use_container_width=True, hide_index=True)
 
         with tab2:
             self._render_overrides(item)
@@ -234,25 +230,20 @@ class InventoryBrowser(Dashboard):
             c1, c2 = st.columns(2)
             description = c1.text_input("Description", value=item.get("description") or "")
             pack_type   = c2.text_input("Pack Type",   value=item.get("pack_type")   or "")
-
             c3, c4, c5 = st.columns(3)
             cost       = c3.number_input("Invoice Cost $", value=float(item.get("cost") or 0), format="%.4f")
             conv_ratio = c4.number_input("Conv Ratio",     value=float(item.get("conv_ratio") or 1), format="%.4f")
-            yield_pct  = c5.number_input("Yield %",        value=float(item.get("yield") or 1) * 100, format="%.1f")
-
+            yield_pct  = c5.number_input("Yield %",        value=float(item.get("yield") or 1)*100, format="%.1f")
             c6, c7, c8 = st.columns(3)
-            per        = c6.selectbox("Per", ["Case", "Each"],
-                                      index=0 if (item.get("per") or "Case") == "Case" else 1)
-            vendor     = c7.text_input("Vendor",  value=item.get("vendor")      or "")
-            gl_code    = c8.text_input("GL Code", value=item.get("gl_code")     or "")
-
-            c9, c10 = st.columns(2)
-            item_number   = c9.text_input("Item #",      value=item.get("item_number")  or "")
-            cost_center   = c10.text_input("Cost Center", value=item.get("cost_center") or "")
-
+            per        = c6.selectbox("Per", ["Case","Each"],
+                                      index=0 if (item.get("per") or "Case")=="Case" else 1)
+            vendor     = c7.text_input("Vendor",  value=item.get("vendor")     or "")
+            gl_code    = c8.text_input("GL Code", value=item.get("gl_code")    or "")
+            c9, c10    = st.columns(2)
+            item_number  = c9.text_input("Item #",       value=item.get("item_number")  or "")
+            cost_center  = c10.text_input("Cost Center", value=item.get("cost_center")  or "")
             is_chargeable = st.checkbox("Chargeable", value=bool(item.get("is_chargeable", True)))
             user_notes    = st.text_area("Notes", value=item.get("user_notes") or "", height=60)
-
             submitted = st.form_submit_button("💾 Save Changes", type="primary")
 
         if submitted:
@@ -289,14 +280,13 @@ class InventoryBrowser(Dashboard):
     def _render_overrides(self, item: dict):
         key = item["key"]
         st.caption("Overrides lock a field against future import overwrites.")
-        fields = {
+        for fk, (label, val) in {
             "conv_ratio": ("Conv Ratio", item.get("override_conv_ratio")),
             "yield":      ("Yield",      item.get("override_yield")),
             "pack_type":  ("Pack Type",  item.get("override_pack_type")),
             "vendor":     ("Vendor",     item.get("override_vendor")),
             "gl":         ("GL Code",    item.get("override_gl")),
-        }
-        for fk, (label, val) in fields.items():
+        }.items():
             oc1, oc2, oc3 = st.columns([2, 2, 1])
             oc1.markdown(f"**{label}**")
             if val:
@@ -307,7 +297,7 @@ class InventoryBrowser(Dashboard):
             else:
                 nv = oc2.text_input("", key=f"ovr_{fk}_{key}",
                                     label_visibility="collapsed",
-                                    placeholder=f"Set {label} override…")
+                                    placeholder=f"Set {label}…")
                 if oc3.button("Set", key=f"set_{fk}_{key}"):
                     if nv:
                         self.db.set_override(key, fk, nv, changed_by="web_user")
@@ -318,7 +308,6 @@ class InventoryBrowser(Dashboard):
     def _render_history(self, key: str):
         history = self.db.get_item_history(key, limit=50)
         prices  = self.db.get_price_history(key, limit=20)
-
         if history:
             st.markdown("**Change History**")
             st.dataframe(pd.DataFrame([{
@@ -327,17 +316,14 @@ class InventoryBrowser(Dashboard):
                 "Old":    str(h.get("old_value") or "")[:30],
                 "New":    str(h.get("new_value") or "")[:30],
                 "By":     h.get("changed_by") or "",
-                "Source": h.get("change_source") or "",
             } for h in history]), use_container_width=True, hide_index=True)
         else:
             st.info("No change history.")
-
         if prices:
             st.markdown("**Price History**")
             st.dataframe(pd.DataFrame([{
                 "Date":   str(p.get("doc_date") or "")[:10],
                 "Price":  f"${float(p.get('price') or 0):.4f}",
-                "File":   p.get("source_file") or "",
                 "Vendor": p.get("vendor") or "",
             } for p in prices]), use_container_width=True, hide_index=True)
 
