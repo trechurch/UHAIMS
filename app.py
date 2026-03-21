@@ -2,8 +2,8 @@
 UHA Inventory Management System
 Streamlit Community Cloud — app shell
 
-v5.3.0  —  Clean revert to stable v5.1.0 architecture.
-            All admin route code removed.
+v5.4.0  —  Diagnostics/Version Sync moved to bottom, hidden unless
+            Versions expander is open in sidebar.
 """
 
 import streamlit as st
@@ -19,7 +19,7 @@ from database import InventoryDatabase
 from registry import get_registry
 from version_syncer import VersionSyncer
 
-__version__ = "5.3.0"
+__version__ = "5.4.0"
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  BOOTSTRAP
@@ -31,9 +31,10 @@ def get_db():
 
 
 def _init():
-    if "page_key"      not in st.session_state: st.session_state.page_key      = "dashboard"
-    if "prev_page_key" not in st.session_state: st.session_state.prev_page_key = None
-    if "show_top_nav"  not in st.session_state: st.session_state.show_top_nav  = True
+    if "page_key"         not in st.session_state: st.session_state.page_key         = "dashboard"
+    if "prev_page_key"    not in st.session_state: st.session_state.prev_page_key    = None
+    if "show_top_nav"     not in st.session_state: st.session_state.show_top_nav     = True
+    if "show_diagnostics" not in st.session_state: st.session_state.show_diagnostics = False
 
 
 def _handle_query_params(registry):
@@ -52,13 +53,47 @@ def _handle_query_params(registry):
         st.rerun()
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  VERSION BADGE
+#  SIDEBAR
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _render_version_badge(registry):
+def _render_sidebar(registry, syncer):
     with st.sidebar:
+        st.image("https://img.icons8.com/emoji/96/stadium.png", width=48)
+        st.markdown("**UHA IMS**")
+        st.caption("TDECU Stadium · Compass Group")
         st.markdown("---")
-        with st.expander("📦 Versions", expanded=False):
+
+        show_nav = st.checkbox(
+            "☰  Top Navigation Bar",
+            value=st.session_state.show_top_nav,
+        )
+        if show_nav != st.session_state.show_top_nav:
+            st.session_state.show_top_nav = show_nav
+            st.rerun()
+
+        st.markdown("---")
+
+        items  = registry.sidebar_items()
+        labels = [f"{i['icon']}  {i['label']}" for i in items]
+        keys   = [i["page_key"] for i in items]
+
+        if not items:
+            st.warning("No modules registered.")
+        else:
+            cur_idx = keys.index(st.session_state.page_key) \
+                      if st.session_state.page_key in keys else 0
+            chosen     = st.radio("Navigate", labels, index=cur_idx)
+            chosen_key = keys[labels.index(chosen)]
+            if chosen_key != st.session_state.page_key:
+                registry.on_navigate_away(st.session_state.page_key)
+                st.session_state.prev_page_key = st.session_state.page_key
+                st.session_state.page_key = chosen_key
+                st.rerun()
+
+        # ── Versions expander — controls diagnostics visibility ───────────
+        st.markdown("---")
+        versions_open = st.expander("📦 Versions", expanded=False)
+        with versions_open:
             try:
                 from database import InventoryDatabase as _IDB
                 db_ver = _IDB.SERVICE_MANIFEST.get("version", "?")
@@ -108,53 +143,25 @@ def _render_version_badge(registry):
                     unsafe_allow_html=True,
                 )
 
-# ──────────────────────────────────────────────────────────────────────────────
-#  SIDEBAR
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _render_sidebar(registry, syncer):
-    with st.sidebar:
-        st.image("https://img.icons8.com/emoji/96/stadium.png", width=48)
-        st.markdown("**UHA IMS**")
-        st.caption("TDECU Stadium · Compass Group")
-        st.markdown("---")
-
-        show_nav = st.checkbox(
-            "☰  Top Navigation Bar",
-            value=st.session_state.show_top_nav,
-        )
-        if show_nav != st.session_state.show_top_nav:
-            st.session_state.show_top_nav = show_nav
-            st.rerun()
-
-        st.markdown("---")
-
-        items  = registry.sidebar_items()
-        labels = [f"{i['icon']}  {i['label']}" for i in items]
-        keys   = [i["page_key"] for i in items]
-
-        if not items:
-            st.warning("No modules registered.")
-        else:
-            cur_idx = keys.index(st.session_state.page_key) \
-                      if st.session_state.page_key in keys else 0
-            chosen     = st.radio("Navigate", labels, index=cur_idx)
-            chosen_key = keys[labels.index(chosen)]
-            if chosen_key != st.session_state.page_key:
-                registry.on_navigate_away(st.session_state.page_key)
-                st.session_state.prev_page_key = st.session_state.page_key
-                st.session_state.page_key = chosen_key
+            st.markdown("---")
+            # Show diagnostics toggle inside versions expander
+            if st.button("🔧 Show Diagnostics", use_container_width=True,
+                         key="toggle_diag"):
+                st.session_state.show_diagnostics = not st.session_state.show_diagnostics
                 st.rerun()
 
-    _render_version_badge(registry)
-    syncer.render_badge()
+        syncer.render_badge()
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  DIAGNOSTICS
+#  DIAGNOSTICS  (bottom of page, only when toggled)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _show_diagnostics(registry, syncer):
-    with st.expander("🔧 Registry Diagnostics", expanded=False):
+    if not st.session_state.get("show_diagnostics"):
+        return
+
+    st.markdown("---")
+    with st.expander("🔧 Registry Diagnostics", expanded=True):
         d = registry.diagnostics()
         st.markdown(
             f"**Modules:** {d['total_modules']} total · "
@@ -170,7 +177,7 @@ def _show_diagnostics(registry, syncer):
         else:
             st.success("✅ No load errors.")
 
-    with st.expander("🔀 Version Sync", expanded=False):
+    with st.expander("🔀 Version Sync", expanded=True):
         syncer.render_panel()
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -184,8 +191,8 @@ def main():
     syncer   = VersionSyncer(registry=registry, repo="trechurch/UHAIMS")
     _handle_query_params(registry)
     _render_sidebar(registry, syncer)
-    _show_diagnostics(registry, syncer)
     registry.dispatch(st.session_state.page_key)
+    _show_diagnostics(registry, syncer)  # bottom of page
 
 
 if __name__ == "__main__":
