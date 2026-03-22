@@ -1,15 +1,65 @@
-# ──────────────────────────────────────────────────────────────────────────────
-#  modules/dashboard_module.py  —  Database Dashboard
-#
-#  GOLD STANDARD — this is the reference every new module copies.
-#  Pattern: MANIFEST → DOCS → sidebar() → on_load() → render()
-#
-#  v1.0.1
-# ──────────────────────────────────────────────────────────────────────────────
+# ==================== UHA TOP NAV FIX v1.0 - FULL REPLACEMENT BLOCK ====================
+# Paste this at the VERY TOP of the render() method in dashboard_module.py
+# Deletes old buried nav, adds fixed viewport-top bar from handoff spec.
+# Commit message: "Fix top nav: fixed position, spec colors, dual toggles"
 
-import pandas as pd
 import streamlit as st
-from datetime import datetime
+
+# 1. Hide Streamlit header + inject fixed top nav styling
+st.markdown('''
+<style> {display: none !important;}
+    #uha-topnav {
+        position: fixed; top: 0; left: 0; width: 100%; z-index: 999999;
+        background: var(--color-bg-primary); color: white; padding: 8px 16px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: flex; align-items: center;
+        font-size: 15px; font-weight: 600;
+    }
+    .nav-menu {
+        margin-left: 24px; cursor: pointer; padding: 5px 12px; border-radius: 4px;
+    }
+    .nav-menu:hover {
+        background: #CCE0F5; color: #0066CC;
+    }
+    .main .block-container, .sidebar .block-container {
+        padding-top: 70px !important;
+    }
+</style>
+''', unsafe_allow_html=True)
+
+# 2. Top nav toggle (sidebar + View menu)
+if "topnav_visible" not in st.session_state:
+    st.session_state.topnav_visible = True
+
+show_nav = st.checkbox("☰ Top Navigation Bar", 
+                       value=st.session_state.topnav_visible, 
+                       key="nav_toggle")
+if show_nav != st.session_state.topnav_visible:
+    st.session_state.topnav_visible = show_nav
+    st.rerun()
+
+# 3. Render fixed top bar only if toggled on
+if st.session_state.topnav_visible:
+    st.markdown('''
+    <div id="uha-topnav">
+        <span style="font-weight:600; font-size:20px; margin-right:32px;">UHA IMS</span>
+        
+        <!-- File Menu -->
+        <span class="nav-menu" onclick="window.location='?page=dashboard'">File</span>
+        
+        <!-- Dashboards Menu -->
+        <span class="nav-menu" onclick="window.location='?page=dashboard'">Dashboards</span>
+        
+        <!-- View Menu -->
+        <span class="nav-menu" onclick="window.location='?page=inventory'">View</span>
+        
+        <!-- Help Menu -->
+        <span class="nav-menu" onclick="window.location='?page=help'">Help</span>
+    </div>
+    ''', unsafe_allow_html=True)
+
+# ==================== END OF UHA TOP NAV FIX - DELETE EVERYTHING ABOVE THIS LINE ====================
+
+# (Your original render() code continues here—keep the rest unchanged)ime
 
 from base import Dashboard
 
