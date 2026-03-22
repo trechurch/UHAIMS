@@ -1,287 +1,259 @@
 # ──────────────────────────────────────────────────────────────────────────────
-#  registry.py  —  Module Registry + Auto-Discovery + Dispatch
+#  registry.py  —  SDOA Module Registry
 #
-#  v1.0.2  —  Fix: discovery errors now stored in self._errors so they
-#              appear in diagnostics().  Previously they were silently
-#              swallowed by st.warning() and never surfaced.
+#  v1.0.3  —  verify() called before on_load().
+#              DEMO_MODE propagated to all modules.
+#              verify() warnings shown before module renders.
 # ──────────────────────────────────────────────────────────────────────────────
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 import importlib
-import importlib.util
 import inspect
-import sys
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Type
-
+import os
 import streamlit as st
+from typing import Dict, List, Optional, Any
 
-from base import Dashboard, ManifestError, DocsError, StubMixin
+from base import Dashboard
 
 # ── end of imports ────────────────────────────────────────────────────────────
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  DISCOVERY
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _discover_dashboard_classes(
-    modules_dir: Path,
-    errors: List[str],          # ← caller passes in the errors list
-) -> List[Type[Dashboard]]:
-    """
-    Scan modules_dir for .py files, import each, collect Dashboard subclasses.
-    All errors are appended to the caller-supplied `errors` list so they
-    surface in registry.diagnostics().
-    """
-    found: List[Type[Dashboard]] = []
-
-    for py_file in sorted(modules_dir.glob("*.py")):
-        if py_file.stem.startswith("_"):
-            continue
-        if py_file.stem in ("base",):
-            continue
-        if py_file.stem.endswith("_doc"):
-            continue
-
-        module_name = f"modules.{py_file.stem}"
-        try:
-            spec = importlib.util.spec_from_file_location(module_name, py_file)
-            mod  = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = mod
-            spec.loader.exec_module(mod)
-        except Exception as exc:
-            msg = f"Import error — {py_file.name}: {type(exc).__name__}: {exc}"
-            errors.append(msg)
-            continue
-
-        classes_found = 0
-        for _, obj in inspect.getmembers(mod, inspect.isclass):
-            if (
-                issubclass(obj, Dashboard)
-                and obj is not Dashboard
-                and obj is not StubMixin
-                and obj.__module__ == module_name
-            ):
-                found.append(obj)
-                classes_found += 1
-
-        if classes_found == 0:
-            errors.append(
-                f"No Dashboard subclass found in {py_file.name} "
-                f"(check class definition and __module__ == '{module_name}')"
-            )
-
-    return found
-
-# ── end of discovery ──────────────────────────────────────────────────────────
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-#  REGISTRY
+#  MODULE REGISTRY
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ModuleRegistry:
 
-    def __init__(self, db=None, modules_dir: Optional[Path] = None):
-        self._db          = db
-        self._modules_dir = modules_dir or (Path(__file__).parent / "modules")
-        self._instances:  Dict[str, Dashboard] = {}
-        self._by_page:    Dict[str, str]        = {}
-        self._errors:     List[str]             = []
-        self._load()
+    SERVICE_MANIFEST = {
+        "id":      "registry",
+        "label":   "Module Registry",
+        "version": "1.0.3",
+        "type":    "service",
+        "provides": [
+            "all() -> List[Dashboard]",
+            "page_keys() -> List[str]",
+            "sidebar_items() -> List[dict]",
+            "dispatch(page_key)",
+            "on_navigate_away(page_key)",
+            "diagnostics() -> dict",
+            "has_errors() -> bool",
+            "errors() -> List[str]",
+        ],
+    }
 
-    # ── Internal load ─────────────────────────────────────────────────────────
+    def __init__(self, db=None, demo_mode: bool = False):
+        self._db         = db
+        self._demo_mode  = demo_mode
+        self._modules:   Dict[str, Dashboard] = {}
+        self._page_map:  Dict[str, str]        = {}
+        self._errors:    List[str]             = []
+        self._loaded:    set                   = set()
 
-    def _load(self) -> None:
-        if not self._modules_dir.exists():
+        # Propagate demo_mode to base class (class-level flag)
+        Dashboard.DEMO_MODE = demo_mode
+
+        self._discover()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    #  DISCOVERY
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _discover(self):
+        modules_dir = os.path.join(os.path.dirname(__file__), "modules")
+        if not os.path.isdir(modules_dir):
+            self._errors.append("modules/ directory not found")
+            return
+
+        for fname in sorted(os.listdir(modules_dir)):
+            if not fname.endswith(".py"):
+                continue
+            if fname.startswith("_"):
+                continue
+            if fname.endswith("_doc.py"):
+                continue
+
+            module_name = fname[:-3]
+            try:
+                mod = importlib.import_module(f"modules.{module_name}")
+                classes = self._find_dashboard_classes(mod)
+                for cls in classes:
+                    self._register(cls)
+            except Exception as exc:
+                self._errors.append(
+                    f"Failed to load modules/{fname}: {type(exc).__name__}: {exc}"
+                )
+
+    def _find_dashboard_classes(self, module) -> List[type]:
+        found = []
+        for name, obj in inspect.getmembers(module, inspect.isclass):
+            if (obj is not Dashboard
+                    and issubclass(obj, Dashboard)
+                    and obj.__module__ == module.__name__):
+                found.append(obj)
+        return found
+
+    def _register(self, cls: type):
+        try:
+            instance = cls(db=self._db)
+        except Exception as exc:
             self._errors.append(
-                f"modules/ directory not found at {self._modules_dir}"
+                f"Failed to instantiate {cls.__name__}: {type(exc).__name__}: {exc}"
             )
             return
 
-        # Pass self._errors so discovery errors are captured
-        classes = _discover_dashboard_classes(self._modules_dir, self._errors)
+        mod_id   = instance.id
+        page_key = instance.page_key
 
-        for cls in classes:
-            try:
-                instance = cls(db=self._db)
-            except (ManifestError, DocsError) as exc:
-                self._errors.append(f"Manifest/Docs error — {cls.__name__}: {exc}")
-                continue
-            except Exception as exc:
-                self._errors.append(
-                    f"Instantiation error — {cls.__name__}: "
-                    f"{type(exc).__name__}: {exc}"
-                )
-                continue
+        if mod_id in self._modules:
+            self._errors.append(
+                f"Duplicate module id '{mod_id}' — "
+                f"{cls.__name__} conflicts with existing module"
+            )
+            return
 
-            mid = instance.id
-            pk  = instance.page_key
+        if page_key in self._page_map:
+            self._errors.append(
+                f"Duplicate page_key '{page_key}' — "
+                f"{cls.__name__} conflicts with existing module"
+            )
+            return
 
-            if mid in self._instances:
-                self._errors.append(
-                    f"Duplicate module id '{mid}' — {cls.__name__} skipped"
-                )
-                continue
+        self._modules[mod_id]      = instance
+        self._page_map[page_key]   = mod_id
 
-            if pk in self._by_page:
-                self._errors.append(
-                    f"Duplicate page_key '{pk}' — {cls.__name__} skipped"
-                )
-                continue
-
-            self._instances[mid] = instance
-            self._by_page[pk]    = mid
-
-    # ── Public query API ──────────────────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────────────
+    #  PUBLIC API
+    # ──────────────────────────────────────────────────────────────────────────
 
     def all(self) -> List[Dashboard]:
-        return [m for m in self._instances.values() if m.status != "disabled"]
-
-    def by_id(self, module_id: str) -> Optional[Dashboard]:
-        return self._instances.get(module_id)
-
-    def by_page_key(self, page_key: str) -> Optional[Dashboard]:
-        mid = self._by_page.get(page_key)
-        return self._instances.get(mid) if mid else None
+        return list(self._modules.values())
 
     def page_keys(self) -> List[str]:
-        return list(self._by_page.keys())
+        return list(self._page_map.keys())
 
-    def has_errors(self) -> bool:
-        return bool(self._errors)
-
-    def errors(self) -> List[str]:
-        return list(self._errors)
-
-    # ── Navigation builders ───────────────────────────────────────────────────
-
-    def nav_items(self, menu_parent: str) -> List[Dict]:
+    def sidebar_items(self) -> List[dict]:
         items = []
-        for m in self.all():
-            menu_cfg = m.MANIFEST.get("menu", {})
-            if menu_cfg.get("parent") == menu_parent:
-                items.append({
-                    "label":    menu_cfg.get("label", m.label),
-                    "page_key": m.page_key,
-                    "icon":     m.icon,
-                    "shortcut": menu_cfg.get("shortcut", ""),
-                    "position": menu_cfg.get("position", 99),
-                    "status":   m.status,
-                })
+        for mod in self._modules.values():
+            sidebar_cfg = mod.MANIFEST.get("sidebar", {})
+            if not sidebar_cfg.get("show", True):
+                continue
+            if mod.status == "disabled":
+                continue
+            items.append({
+                "id":       mod.id,
+                "label":    mod.label,
+                "icon":     mod.icon,
+                "page_key": mod.page_key,
+                "position": sidebar_cfg.get("position", 99),
+                "section":  sidebar_cfg.get("section", ""),
+            })
         return sorted(items, key=lambda x: x["position"])
 
-    def sidebar_items(self) -> List[Dict]:
-        items = []
-        for m in self.all():
-            sb_cfg = m.MANIFEST.get("sidebar", {})
-            if sb_cfg.get("show", False):
-                items.append({
-                    "label":    m.label,
-                    "page_key": m.page_key,
-                    "icon":     m.icon,
-                    "section":  sb_cfg.get("section", ""),
-                    "position": sb_cfg.get("position", 99),
-                    "status":   m.status,
-                })
-        return sorted(items, key=lambda x: (x["section"], x["position"]))
-
-    # ── Dispatch ──────────────────────────────────────────────────────────────
-
-    def dispatch(self, page_key: str) -> None:
-        module = self.by_page_key(page_key)
-
-        if module is None:
-            self._render_404(page_key)
-            return
-
-        if module.status == "disabled":
-            self._render_disabled(module)
-            return
-
-        load_key = f"_registry_loaded_{module.id}"
-        if not st.session_state.get(load_key, False):
+    def on_navigate_away(self, page_key: str) -> None:
+        """Called when user navigates away from a module."""
+        mod_id = self._page_map.get(page_key)
+        if mod_id and hasattr(self._modules[mod_id], "on_navigate_away"):
             try:
-                module.on_load()
-                st.session_state[load_key] = True
-            except Exception as exc:
-                st.error(f"[{module.label}] on_load() failed: {exc}")
-
-        try:
-            module.sidebar()
-        except Exception as exc:
-            st.sidebar.error(f"[{module.label}] sidebar() error: {exc}")
-
-        try:
-            if module.is_stub:
-                module._render_stub()
-            else:
-                module.render()
-        except Exception as exc:
-            self._render_crash(module, exc)
-
-    # ── on_unload ─────────────────────────────────────────────────────────────
-
-    def on_navigate_away(self, previous_page_key: str) -> None:
-        module = self.by_page_key(previous_page_key)
-        if module:
-            try:
-                module.on_unload()
+                self._modules[mod_id].on_navigate_away()
             except Exception:
                 pass
 
-    # ── Fallback renderers ────────────────────────────────────────────────────
+    def dispatch(self, page_key: str) -> None:
+        """
+        Route to the module for the given page_key.
+        Calls verify() → on_load() → sidebar() → render().
+        """
+        mod_id = self._page_map.get(page_key)
+        if not mod_id:
+            st.warning(f"No module registered for page_key '{page_key}'")
+            return
 
-    @staticmethod
-    def _render_404(page_key: str) -> None:
-        st.title("404 — Page Not Found")
-        st.error(
-            f"No module registered for page key **`{page_key}`**.  \n"
-            f"Check the module's MANIFEST `page_key` field."
-        )
+        mod = self._modules[mod_id]
 
-    @staticmethod
-    def _render_disabled(module: Dashboard) -> None:
-        st.title(f"{module.icon} {module.label}")
-        st.warning(f"**{module.label}** is currently disabled.")
+        # ── Demo mode warning ─────────────────────────────────────────────
+        if self._demo_mode:
+            mod._render_demo_warning()
 
-    @staticmethod
-    def _render_crash(module: Dashboard, exc: Exception) -> None:
-        st.title(f"{module.icon} {module.label}")
-        st.error(
-            f"**{module.label}** render error:  \n"
-            f"`{type(exc).__name__}: {exc}`"
-        )
-        with st.expander("Module manifest"):
-            st.json(module.MANIFEST)
+        # ── verify() — health check before on_load ────────────────────────
+        verify_key = f"_verified_{mod_id}"
+        if verify_key not in st.session_state:
+            try:
+                warnings = mod.verify()
+                st.session_state[verify_key] = warnings
+            except Exception as exc:
+                st.session_state[verify_key] = [f"verify() raised: {exc}"]
 
-    # ── Diagnostics ───────────────────────────────────────────────────────────
+        verify_warnings = st.session_state.get(verify_key, [])
+        if verify_warnings:
+            mod._render_verify_warnings(verify_warnings)
 
-    def diagnostics(self) -> Dict:
+        # ── on_load() — once per session ──────────────────────────────────
+        load_key = f"_loaded_{mod_id}"
+        if load_key not in st.session_state:
+            try:
+                mod.on_load()
+                st.session_state[load_key] = True
+            except Exception as exc:
+                st.session_state[load_key] = False
+                mod._render_crash(exc)
+                return
+
+        # ── sidebar() ─────────────────────────────────────────────────────
+        try:
+            mod.sidebar()
+        except Exception as exc:
+            pass  # sidebar errors shouldn't block render
+
+        # ── render() ─────────────────────────────────────────────────────
+        try:
+            if mod.status == "stub":
+                mod._render_stub()
+            elif mod.status == "disabled":
+                mod._render_disabled()
+            else:
+                mod.render()
+        except Exception as exc:
+            mod._render_crash(exc)
+
+    # ──────────────────────────────────────────────────────────────────────────
+    #  DIAGNOSTICS
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def diagnostics(self) -> dict:
+        active   = sum(1 for m in self._modules.values() if m.status == "active")
+        stubs    = sum(1 for m in self._modules.values() if m.status == "stub")
+        disabled = sum(1 for m in self._modules.values() if m.status == "disabled")
         return {
-            "total_modules":    len(self._instances),
-            "active":           len([m for m in self._instances.values() if m.status == "active"]),
-            "stubs":            len([m for m in self._instances.values() if m.status == "stub"]),
-            "disabled":         len([m for m in self._instances.values() if m.status == "disabled"]),
-            "load_errors":      self._errors,
-            "registered_pages": list(self._by_page.keys()),
-            "manifests":        {mid: m.MANIFEST for mid, m in self._instances.items()},
+            "total_modules":     len(self._modules),
+            "active":            active,
+            "stubs":             stubs,
+            "disabled":          disabled,
+            "registered_pages":  sorted(self._page_map.keys()),
+            "load_errors":       self._errors,
+            "demo_mode":         self._demo_mode,
         }
+
+    def has_errors(self) -> bool:
+        return len(self._errors) > 0
+
+    def errors(self) -> List[str]:
+        return self._errors
 
 # ── end of ModuleRegistry ─────────────────────────────────────────────────────
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  SINGLETON
+#  CACHED FACTORY
 # ──────────────────────────────────────────────────────────────────────────────
 
 @st.cache_resource
-def get_registry(_db=None) -> ModuleRegistry:
+def get_registry(_db=None, _demo_mode: bool = False) -> ModuleRegistry:
     """
-    Cached singleton. _db prefix bypasses Streamlit's unhashable param error.
+    Cached registry singleton.
+    _db and _demo_mode use leading underscore to bypass Streamlit's
+    cache hash (psycopg2 connections are not hashable).
     """
-    return ModuleRegistry(db=_db)
+    return ModuleRegistry(db=_db, demo_mode=_demo_mode)
 
 # ── end of registry.py ────────────────────────────────────────────────────────
