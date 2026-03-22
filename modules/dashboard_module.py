@@ -7,23 +7,37 @@ import streamlit as st
 
 # 1. Hide Streamlit header + inject fixed top nav styling
 st.markdown('''
+# ==================== UHA TOP NAV FORCE-VISIBLE DEBUG v1.1 - FULL REPLACEMENT ====================
+# Paste at TOP of render() — replaces previous nav code.
+# No toggle, always on; red border for visibility. Test this, then we add toggle back.
+
+import streamlit as st
+
+st.markdown('''
 <style> {display: none !important;}
     #uha-topnav {
         position: fixed; top: 0; left: 0; width: 100%; z-index: 999999;
-        background: var(--color-bg-primary); color: white; padding: 8px 16px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1); display: flex; align-items: center;
-        font-size: 15px; font-weight: 600;
+        background: #001f3f; color: white; padding: 12px 20px;  /* Navy bg, brighter */
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        display: flex; align-items: center; font-size: 16px; font-weight: 600;
+        border-bottom: 3px solid red;  /* DEBUG: red line to spot it */
     }
     .nav-menu {
-        margin-left: 24px; cursor: pointer; padding: 5px 12px; border-radius: 4px;
+        margin-left: 32px; cursor: pointer; padding: 6px 14px; border-radius: 6px;
     }
     .nav-menu:hover {
         background: #CCE0F5; color: #0066CC;
     }
     .main .block-container, .sidebar .block-container {
-        padding-top: 70px !important;
+        padding-top: 80px !important;  /* Extra space for taller bar */
     }
 </style>
+''', unsafe_allow_html=True)
+
+# Force visible for debug—no session state mess
+st.markdown('''
+<div id="uha-topnav">
+    <span
 ''', unsafe_allow_html=True)
 
 # 2. Top nav toggle (sidebar + View menu)
