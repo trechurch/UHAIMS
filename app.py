@@ -2,7 +2,8 @@
 UHA Inventory Management System
 Streamlit Community Cloud — app shell
 
-v5.4.0  —  Diagnostics/Version Sync moved to bottom, hidden unless
+v5.5.0  —  Demo mode toggle added. verify() wired via registry v1.0.3.
+            v5.4.0  —  Diagnostics/Version Sync moved to bottom, hidden unless
             Versions expander is open in sidebar.
 """
 
@@ -19,7 +20,7 @@ from database import InventoryDatabase
 from registry import get_registry
 from version_syncer import VersionSyncer
 
-__version__ = "5.4.0"
+__version__ = "5.5.0"
 
 # ──────────────────────────────────────────────────────────────────────────────
 #  BOOTSTRAP
@@ -145,6 +146,13 @@ def _render_sidebar(registry, syncer):
 
             st.markdown("---")
             # Show diagnostics toggle inside versions expander
+            # Demo mode toggle
+            is_demo = st.session_state.get("demo_mode", False)
+            if st.toggle("🎬 Demo Mode", value=is_demo, key="demo_mode_toggle"):
+                st.session_state["demo_mode"] = True
+            else:
+                st.session_state["demo_mode"] = False
+
             if st.button("🔧 Show Diagnostics", use_container_width=True,
                          key="toggle_diag"):
                 st.session_state.show_diagnostics = not st.session_state.show_diagnostics
@@ -187,7 +195,8 @@ def _show_diagnostics(registry, syncer):
 def main():
     _init()
     db       = get_db()
-    registry = get_registry(_db=db)
+    demo_mode = st.session_state.get("demo_mode", False)
+    registry = get_registry(_db=db, _demo_mode=demo_mode)
     syncer   = VersionSyncer(registry=registry, repo="trechurch/UHAIMS")
     _handle_query_params(registry)
     _render_sidebar(registry, syncer)
