@@ -81,6 +81,10 @@ class ExportDashboard(Dashboard):
         df = pd.DataFrame(items)
         st.caption(f"{len(df)} active items")
 
+        # Strip timezone from any datetime columns — Excel doesn't support tz-aware
+        for col in df.select_dtypes(include=["datetimetz"]).columns:
+            df[col] = df[col].dt.tz_localize(None)
+
         datestamp = datetime.now().strftime("%Y%m%d")
 
         # ── Excel download ────────────────────────────────────────────────────

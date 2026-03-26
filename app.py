@@ -124,38 +124,21 @@ COST_CENTERS = {
 
 def get_available_databases() -> dict:
     """
-    Return dict of cost_center_code -> db_url for all configured databases.
-    Reads from Streamlit secrets: DB_57230, DB_57231, etc.
+    Return dict of cost_center_code -> db_url.
+    All cost centers share one Supabase instance; cost_center column handles filtering.
     """
-    available = {}
-    for code, meta in COST_CENTERS.items():
-        secret_key = meta["secret_key"]
-        try:
-            db_url = st.secrets.get(secret_key)
-            if db_url:
-                available[code] = db_url
-        except Exception:
-            # Try environment variable as fallback
-            db_url = os.environ.get(secret_key)
-            if db_url:
-                available[code] = db_url
-    return available
+    try:
+        db_url = st.secrets.get("SUPABASE_DB_URL") or os.environ.get("SUPABASE_DB_URL", "")
+    except Exception:
+        db_url = os.environ.get("SUPABASE_DB_URL", "")
+    if not db_url:
+        return {}
+    return {code: db_url for code in COST_CENTERS}
 
 
 def get_default_database() -> str:
-    """Return the default cost center code (first available database)."""
-    available = get_available_databases()
-    if not available:
-        # Emergency fallback — try legacy SUPABASE_DB_URL
-        try:
-            legacy = st.secrets.get("SUPABASE_DB_URL")
-            if legacy:
-                return "57231"  # Assume TDECU if using legacy config
-        except Exception:
-            pass
-        return "57231"  # Hard fallback
-    # Return first available
-    return sorted(available.keys())[0]
+    """Return the default cost center code."""
+    return "57231"
 
 
 def get_current_database() -> str:
@@ -188,34 +171,19 @@ def set_current_database(code: str) -> None:
 @st.cache_resource
 def get_db(_db_code: str = None) -> InventoryDatabase:
     """
-    Database factory — creates DB connection for the given cost center.
-    _db_code parameter excluded from cache hash (leading underscore).
+    Database factory — single Supabase instance for all cost centers.
+    Cost center filtering is handled via the cost_center column in queries.
+    _db_code is accepted for API compatibility but ignored.
     """
-    available = get_available_databases()
-    code = _db_code or get_current_database()
-    
-    if code in available:
-        db_url = available[code]
-        return InventoryDatabase(db_url=db_url)
-    
-    # Fallback to legacy SUPABASE_DB_URL if configured
     try:
-        legacy = st.secrets.get("SUPABASE_DB_URL")
-        if legacy:
-            return InventoryDatabase(db_url=legacy)
+        db_url = st.secrets.get("SUPABASE_DB_URL") or os.environ.get("SUPABASE_DB_URL", "")
     except Exception:
-        pass
-    
-    # Last resort — try environment
-    legacy = os.environ.get("SUPABASE_DB_URL")
-    if legacy:
-        return InventoryDatabase(db_url=legacy)
-    
-    # No database configured
-    raise RuntimeError(
-        f"No database configured for cost center {code}. "
-        f"Add {COST_CENTERS[code]['secret_key']} to Streamlit secrets."
-    )
+        db_url = os.environ.get("SUPABASE_DB_URL", "")
+    if not db_url:
+        raise RuntimeError(
+            "No database configured. Add SUPABASE_DB_URL to Streamlit secrets."
+        )
+    return InventoryDatabase(db_url=db_url)
 
 
 @st.cache_resource
@@ -333,13 +301,18 @@ def render_top_nav(feat_registry: FeatureRegistry) -> None:
         if item.page_key:
             active = " uha-active" if cur_page == item.page_key else ""
             return f'<a class="uha-nav-item{active}" href="?page={item.page_key}">{lbl}</a>'
+        if item.db_key:
+            # Cost center switcher — plain ?db= URL, handled by ?db= param handler
+            active = " uha-active" if item.db_key == cur_db else ""
+            return f'<a class="uha-nav-item{active}" href="?db={item.db_key}">{lbl}</a>'
         if item.js_action:
-            active = " uha-active" if item.db_key and item.db_key == cur_db else ""
+            # Browser-native actions (window.open, print, share, etc.)
+            # Safe because nav is injected into parent DOM, so onclick runs in page context
             safe = item.js_action.replace('"', "&quot;")
-            return f'<a class="uha-nav-item{active}" href="#" onclick="{safe}; return false;">{lbl}</a>'
+            return f'<a class="uha-nav-item" href="#" onclick="{safe}; return false;">{lbl}</a>'
         return ""
 
-    # Skip menus whose entire dropdown is empty (all items hidden by feature flags)
+    # Skip menus whose entire dropdown is empty
     _sep = '<hr class="uha-nav-sep"/>'
     menu_parts = []
     for m in menu_bar.menus:
@@ -354,42 +327,42 @@ def render_top_nav(feat_registry: FeatureRegistry) -> None:
         )
     menus_html = "".join(menu_parts)
 
-    fixed_css = _NAV_CSS + """
-    <style>
-    #uha-topnav-root .uha-nav {
-        position: fixed !important;
-        top: 0 !important;
-        left: 0 !important;
-        right: 0 !important;
-        z-index: 99999 !important;
-        border-radius: 0 !important;
-        margin-bottom: 0 !important;
-    }
-    </style>
-    """
-
-    st.markdown(
-        f'{fixed_css}'
-        f'<div id="uha-topnav-root">'
+    nav_inner = (
         f'<div class="uha-nav">'
         f'<span class="uha-nav-title">🏟️ UHA IMS</span>'
         f'{menus_html}'
-        f'</div></div>'
-        f"""<script>
-        (function() {{
-            function moveNav() {{
-                var nav = document.getElementById('uha-topnav-root');
-                if (nav && nav.parentElement !== document.body) {{
-                    document.body.appendChild(nav);
-                }}
-            }}
-            var obs = new MutationObserver(moveNav);
-            obs.observe(document.body, {{ childList: true, subtree: true }});
-            moveNav();
-        }})();
-        </script>""",
-        unsafe_allow_html=True,
+        f'</div>'
     )
+
+    # Extract raw CSS text from the _NAV_CSS <style> block
+    _css_text = _NAV_CSS.replace("<style>", "").replace("</style>", "").strip()
+
+    # Escape backticks and template-literal markers for JS template string
+    _css_js  = _css_text.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+    _nav_js  = nav_inner.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+
+    # Inject nav + CSS directly into parent document body via components iframe.
+    # st.components.v1.html() runs in a same-origin iframe; window.parent gives
+    # access to the real page DOM, so position:fixed pins to the actual viewport.
+    import streamlit.components.v1 as _cv1
+    _cv1.html(f"""
+<script>
+(function() {{
+  var pd = window.parent.document;
+
+  // Upsert <style id="uha-nav-css"> in <head>
+  var s = pd.getElementById('uha-nav-css');
+  if (!s) {{ s = pd.createElement('style'); s.id = 'uha-nav-css'; pd.head.appendChild(s); }}
+  s.textContent = `{_css_js}`;
+
+  // Upsert <div id="uha-topnav-root"> in <body>
+  var n = pd.getElementById('uha-topnav-root');
+  if (!n) {{ n = pd.createElement('div'); n.id = 'uha-topnav-root'; pd.body.appendChild(n); }}
+  n.innerHTML = `{_nav_js}`;
+}})();
+</script>
+""", height=0)
+
     # Spacer so page content doesn't hide under the fixed bar
     st.markdown('<div style="height:46px"></div>', unsafe_allow_html=True)
 
@@ -507,8 +480,57 @@ def render_sidebar(db, registry, feat_registry: FeatureRegistry,
 
         st.markdown("---")
 
+        # ── Dev Tools (localhost only) ────────────────────────────────
+        _render_dev_tools()
+
         # ── User badge (moved to bottom) ──────────────────────────────
         auth.render_user_badge()
+
+
+def _render_dev_tools() -> None:
+    """Push-to-GitHub button — only rendered when running on localhost."""
+    import socket
+    try:
+        host = socket.gethostname()
+        is_local = host in ("localhost", "127.0.0.1") or not host.startswith("ip-")
+    except Exception:
+        is_local = False
+    if not is_local:
+        return
+
+    with st.expander("🛠 Dev Tools", expanded=False):
+        commit_msg = st.text_input(
+            "Commit message",
+            placeholder="leave blank for auto-timestamp",
+            key="dev_commit_msg",
+            label_visibility="collapsed",
+        )
+        if st.button("🚀 Push to GitHub", use_container_width=True, key="dev_push_btn"):
+            import subprocess, os
+            repo = os.path.dirname(os.path.abspath(__file__))
+            msg  = commit_msg.strip() or f"Update {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}"
+
+            with st.spinner("Pushing…"):
+                add   = subprocess.run(["git", "-C", repo, "add", "."],
+                                       capture_output=True, text=True)
+                diff  = subprocess.run(["git", "-C", repo, "diff", "--cached", "--quiet"],
+                                       capture_output=True)
+                if diff.returncode == 0:
+                    st.info("Nothing to commit — working tree is clean.")
+                else:
+                    commit = subprocess.run(
+                        ["git", "-C", repo, "commit", "-m", msg],
+                        capture_output=True, text=True,
+                    )
+                    push = subprocess.run(
+                        ["git", "-C", repo, "push", "origin", "main"],
+                        capture_output=True, text=True,
+                    )
+                    if push.returncode == 0:
+                        st.success(f"✓ Pushed: {msg}")
+                    else:
+                        st.error("Push failed")
+                        st.code(push.stderr or commit.stderr)
 
 
 def _render_version_panel(registry) -> None:

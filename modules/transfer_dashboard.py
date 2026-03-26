@@ -98,7 +98,7 @@ class TransferDashboard(Dashboard):
             "show":     True,
         },
         "depends_on":   ["database"],
-        "db_tables":    ["items", "transfers", "transfer_lines"],
+        "db_tables":    ["items"],
         "session_keys": ["transfer_draft_lines"],
         "abilities": [
             "Create inventory transfers between cost centers",

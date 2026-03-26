@@ -173,7 +173,6 @@ class InventoryBrowser(Dashboard):
             qty  = float(item.get("quantity_on_hand") or 0)
             uc   = cost / conv if conv > 1 else cost
             rows.append({
-                "✓":    item["key"] in selected_keys,
                 "Description": (item.get("description") or "")[:36],
                 "Pack":        (item.get("pack_type") or "")[:14],
                 "$/ea":        round(uc, 3),
@@ -183,14 +182,13 @@ class InventoryBrowser(Dashboard):
 
         df = pd.DataFrame(rows)
 
-        # Render with selection — click row highlights it as focus
+        # Render with selection — Streamlit adds its own selection checkbox column
         event = st.dataframe(
             df,
             use_container_width=True,
             hide_index=True,
             height=620,
             column_config={
-                "✓":    st.column_config.CheckboxColumn("✓", width="small"),
                 "$/ea": st.column_config.NumberColumn("$/ea", format="$%.3f"),
                 "Qty":  st.column_config.NumberColumn("Qty", format="%.0f"),
             },

@@ -467,9 +467,10 @@ def build_default_registry() -> FeatureRegistry:
     reg.add("export",               "Export Inventory",              True)
     reg.add("settings",             "Settings & Feature Toggles",    True)
     reg.add("dashboard",            "Dashboard",                     True)
+    # ── Enabled modules ──────────────────────────────────────────────────────
+    reg.add("pca_engine",           "PCA Creator & Build Sandbox",   True)
+    reg.add("transfer_engine",      "Transfer Sheet Generator",      True)
     # ── Disabled until modules are built ─────────────────────────────────────
-    reg.add("pca_engine",           "PCA Creator & Build Sandbox",   False)
-    reg.add("transfer_engine",      "Transfer Sheet Generator",      False)
     reg.add("app_management",       "App Management Dashboard",      False)
     reg.add("changelog",            "What's New / Changelog",        False)
     reg.add("compare_counts",       "Compare Count Files",           False)
