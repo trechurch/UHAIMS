@@ -1,0 +1,44 @@
+"Self-Describing Object Architecture"
+for 
+UHA Inventory Management System
+
+Moduler
+Self-declaration — every object announces its own identity, dependencies, and capabilities via MANIFEST
+Self-documentation — every object carries its own narrative, issues, and changelog via DOCS
+Self-registration — the system discovers and wires from declarations, nothing is hardcoded externally
+
+roadmap~
+
+repo/
+├── app.py                          ← pure shell, never changes
+├── base.py                         ← contract (Dashboard, StubMixin, validators)
+├── registry.py                     ← auto-discovery + dispatch
+├── docs_generator.py               ← run to regenerate all docs
+├── database.py                     ← existing (unchanged)
+├── auth.py                         ← existing (unchanged)
+├── modules/
+│   ├── dashboard_module.py         ← ✅ reference implementation
+│   ├── dashboard_module_doc.py     ← ✅ companion diagnostic
+│   ├── import_dashboard.py         ← next
+│   ├── import_dashboard_doc.py     ← next
+│   └── ...
+└── docs/                           ← generated, never hand-edited
+    ├── SYSTEM_MANIFEST.md
+    ├── DEMO_CHECKLIST.md
+    └── dashboard_module.md
+The workflow for every new module:
+
+Copy dashboard_module.py → rename → fill in MANIFEST, DOCS, render()
+Copy dashboard_module_doc.py → update the two constants at the top (__module__, import line)
+Run python modules/new_module_doc.py --validate — must be all green before anything else
+Run python docs_generator.py — docs write themselves
+Drop in modules/ — registry picks it up automatically on next app start
+
+common diagnostic commands:
+
+bashpython modules/dashboard_module_doc.py           # full spec sheet
+python modules/dashboard_module_doc.py --validate  # CI-style pass/fail
+python docs_generator.py --demo-check           # demo readiness report
+
+
+
