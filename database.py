@@ -510,6 +510,49 @@ class InventoryDatabase:
             cur.execute("SELECT 1 FROM items WHERE key = %s", (key,))
             return cur.fetchone() is not None
 
+    def update_item(self, key: str, updates: Dict[str, Any],
+                    changed_by: str = "system",
+                    change_reason: str = "") -> bool:
+        """Public update wrapper — used by GL manager and other services."""
+        updates["last_updated"] = datetime.utcnow()
+        return self._apply_update(key, updates,
+                                  change_source="manual_edit",
+                                  changed_by=changed_by)
+
+    def bulk_update_cost_center(self, cost_center: str,
+                                 only_unset: bool = True) -> int:
+        """Assign cost_center to all items. Returns count updated."""
+        with get_conn() as conn:
+            cur = conn.cursor()
+            if only_unset:
+                cur.execute("""
+                    UPDATE items SET cost_center = %s
+                    WHERE (cost_center IS NULL OR cost_center = '')
+                      AND record_status != 'discontinued'
+                """, (cost_center,))
+            else:
+                cur.execute("""
+                    UPDATE items SET cost_center = %s
+                    WHERE record_status != 'discontinued'
+                """, (cost_center,))
+            return cur.rowcount
+
+    def bulk_update_gl(self, keys: list, gl_code: str,
+                        gl_name: str, changed_by: str = "user") -> int:
+        """Assign gl_code + gl_name to a list of item keys. Returns count updated."""
+        updated = 0
+        for key in keys:
+            ok = self._apply_update(
+                key,
+                {"gl_code": gl_code, "gl_name": gl_name,
+                 "last_updated": datetime.utcnow()},
+                change_source="bulk_gl_assignment",
+                changed_by=changed_by,
+            )
+            if ok:
+                updated += 1
+        return updated
+
     def delete_item(self, key: str, changed_by: str = "system") -> bool:
         return self._apply_update(key, {"record_status": "discontinued"},
                                   change_source="manual_deletion",
