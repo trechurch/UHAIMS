@@ -7,6 +7,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 from base import Dashboard
+from utils import num_input, fmt_currency
 
 # ── Full Compass cost center list ─────────────────────────────────────────────
 COST_CENTERS = {
@@ -245,7 +246,7 @@ class TransferDashboard(Dashboard):
                                         key="xfr_item_sel")
             item       = item_map[item_label]
             quantity   = lc2.number_input("Qty", value=1.0,
-                                           min_value=0.001, format="%.4f",
+                                           min_value=0.0,
                                            key="xfr_qty")
             line_notes = lc3.text_input("Notes", key="xfr_line_notes")
 
@@ -405,7 +406,7 @@ class TransferDashboard(Dashboard):
                                        ["All","draft","submitted","approved"],
                                        key="hist_status")
         limit         = fc3.number_input("Show last N", value=20, min_value=1,
-                                          step=1, key="hist_limit")
+                                         step=1, format="%.0f", key="hist_limit")
         try:
             from database import get_conn
             with get_conn() as conn:

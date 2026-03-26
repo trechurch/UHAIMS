@@ -10,6 +10,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from base import Dashboard
+from utils import num_input, fmt_num
 
 try:
     import auth as _auth
@@ -358,15 +359,15 @@ class InventoryBrowser(Dashboard):
             pack_type     = c2.text_input("Pack Type",    value=item.get("pack_type")   or "")
 
             c3, c4, c5 = st.columns(3)
-            cost          = c3.number_input("Invoice Cost $",
-                                            value=float(item.get("cost") or 0),
-                                            format="%.4f")
-            conv_ratio    = c4.number_input("Conv Ratio",
-                                            value=float(item.get("conv_ratio") or 1),
-                                            format="%.4f")
-            yield_pct     = c5.number_input("Yield %",
-                                            value=float(item.get("yield") or 1) * 100,
-                                            format="%.1f")
+            cost          = num_input("Invoice Cost $",
+                                      value=float(item.get("cost") or 0),
+                                      min_value=0.0, step=0.01)
+            conv_ratio    = num_input("Conv Ratio",
+                                      value=float(item.get("conv_ratio") or 1),
+                                      min_value=0.0, step=0.01)
+            yield_pct     = num_input("Yield %",
+                                      value=float(item.get("yield") or 1) * 100,
+                                      min_value=0.0, max_value=100.0, step=1.0)
 
             c6, c7, c8 = st.columns(3)
             per           = c6.selectbox("Per", ["Case", "Each"],
@@ -377,9 +378,9 @@ class InventoryBrowser(Dashboard):
             c9, c10, c11 = st.columns(3)
             item_number   = c9.text_input("Item #",       value=item.get("item_number")  or "")
             cost_center   = c10.text_input("Cost Center", value=item.get("cost_center")  or "")
-            qoh           = c11.number_input("Qty on Hand",
-                                             value=float(item.get("quantity_on_hand") or 0),
-                                             format="%.2f")
+            qoh           = num_input("Qty on Hand",
+                                      value=float(item.get("quantity_on_hand") or 0),
+                                      min_value=0.0)
 
             is_chargeable = st.checkbox("Chargeable",
                                         value=bool(item.get("is_chargeable", True)))

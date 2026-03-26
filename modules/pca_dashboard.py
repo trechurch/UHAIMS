@@ -9,6 +9,7 @@ import json
 import streamlit as st
 import pandas as pd
 from base import Dashboard
+from utils import num_input, fmt_currency
 
 class PCADashboard(Dashboard):
 
@@ -157,10 +158,10 @@ class PCADashboard(Dashboard):
                 name     = c1.text_input("Menu Item Name *")
                 category = c2.selectbox("Category", ["Concessions", "Catering", "Premium", "Other"])
                 c3, c4, c5, c6 = st.columns(4)
-                price    = c3.number_input("Selling Price $", value=0.0,  format="%.2f")
-                goal_pct = c4.number_input("Cost % Goal",    value=17.0, format="%.1f")
-                servings = c5.number_input("Servings/Portion", value=1, min_value=1, step=1)
-                portions = c6.number_input("Portions",          value=1, min_value=1, step=1)
+                price    = num_input("Selling Price $", value=0.0,  min_value=0.0, step=0.01)
+                goal_pct = num_input("Cost % Goal",    value=17.0, min_value=0.0, max_value=100.0, step=0.5)
+                servings = st.number_input("Servings/Portion", value=1, min_value=1, step=1, format="%.0f")
+                portions = st.number_input("Portions",          value=1, min_value=1, step=1, format="%.0f")
                 submitted = st.form_submit_button("Create Recipe", type="primary")
             if submitted and name:
                 rid = pca.create_recipe(
@@ -328,9 +329,9 @@ class PCADashboard(Dashboard):
             elif "CASE" in pack or "CS" in pack:
                 default_unit = "Case"
 
-            ep_amount = c2.number_input(
+            ep_amount = num_input(
                 "EP Amount" if ing_type == "food" else "Units/Serving",
-                value=1.0, format="%.4f", key=f"{form_key}_ep"
+                value=1.0, min_value=0.0, step=0.01, key=f"{form_key}_ep"
             )
             unit = c3.selectbox(
                 "Unit",

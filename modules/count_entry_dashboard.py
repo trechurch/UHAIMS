@@ -10,6 +10,7 @@ import streamlit as st
 import pandas as pd
 from datetime import date, datetime
 from base import Dashboard
+from utils import num_input, fmt_currency
 
 try:
     import auth as _auth
@@ -216,9 +217,9 @@ class CountEntryDashboard(Dashboard):
                     f"<div style='font-size:12px;padding-top:6px'>${uc:.4f}</div>",
                     unsafe_allow_html=True,
                 )
-                new_qty = r4.number_input(
-                    "", value=prev, min_value=0.0, format="%.2f",
-                    step=1.0, key=f"ce_qty_{key}",
+                new_qty = num_input(
+                    "", value=prev, min_value=0.0, step=1.0,
+                    key=f"ce_qty_{key}",
                     label_visibility="collapsed",
                 )
                 ext = new_qty * uc
