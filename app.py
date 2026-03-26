@@ -220,7 +220,18 @@ _NAV_CSS = """
     top: 0;
     left: 0;
     right: 0;
-    z-index: 99999;
+    z-index: 1000000;
+}
+
+/* Push sidebar below the nav bar */
+section[data-testid="stSidebar"] {
+    top: 46px !important;
+    height: calc(100vh - 46px) !important;
+    z-index: 999 !important;
+}
+/* Sidebar collapse/expand toggle button */
+button[data-testid="collapsedControl"] {
+    top: 56px !important;
 }
 .uha-nav {
     display: flex;
