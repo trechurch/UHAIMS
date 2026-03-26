@@ -13,7 +13,7 @@ from typing import Dict, List, Callable, Optional, Any
 #  VERSION
 # ──────────────────────────────────────────────────────────────────────────────
 
-__version__ = "3.0.1"
+__version__ = "3.1.0"
 
 # ── end of version ────────────────────────────────────────────────────────────
 
@@ -66,6 +66,7 @@ class FeatureRegistry:
 class MenuItem:
     label:        str
     page_key:     str               = ""
+    db_key:       str               = ""      # cost center code for switcher items
     js_action:    str               = ""      # raw JS for browser-native actions
     icon:         str               = ""
     action:       Optional[Callable] = None
@@ -84,6 +85,15 @@ class MenuItem:
 #  MENU BAR DEFINITION
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _cc_js(code: str) -> str:
+    """JS snippet to switch cost center via ?db= URL param, preserving ?page=."""
+    return (
+        f"var u=new URL(window.location.href);"
+        f"u.searchParams.set('db','{code}');"
+        f"window.location.href=u.toString();"
+    )
+
+
 class MenuBar:
 
     def __init__(self, registry: FeatureRegistry):
@@ -93,37 +103,18 @@ class MenuBar:
     def _build(self) -> List[MenuItem]:
         return [
 
-            # ── File ─────────────────────────────────────────────────────────
+            # ── File  (spec 3.1) ──────────────────────────────────────────────
             MenuItem(label="File", children=[
-
-                # ── Browser-native (JS only, no page routing) ─────────────────
                 MenuItem("New Tab",
                          icon="🗋",
-                         js_action="window.open(window.location.href,'_blank');"),
-                MenuItem("Duplicate Tab",
-                         icon="⧉",
                          js_action="window.open(window.location.href,'_blank');"),
                 MenuItem("New Window",
                          icon="⬜",
                          js_action="window.open(window.location.href,'_blank','width=1400,height=900');"),
-
                 MenuItem("", separator=True),
-
-                # ── Database operations → db_management page ──────────────────
-                MenuItem("New Database",    page_key="db_management", icon="➕",
-                         feature_flag="db_management"),
-                MenuItem("Open Database",   page_key="db_management", icon="📂",
-                         feature_flag="db_management"),
-                MenuItem("Edit Database",   page_key="db_management", icon="✏️",
-                         feature_flag="db_management"),
-                MenuItem("Save as Database",page_key="db_management", icon="💾",
-                         feature_flag="db_management"),
-                MenuItem("Save Database",   page_key="db_management", icon="🖫",
-                         feature_flag="db_management"),
-
-                MenuItem("", separator=True),
-
-                # ── Share / Print / Export ────────────────────────────────────
+                MenuItem("Print",
+                         icon="🖨",
+                         js_action="window.print();"),
                 MenuItem("Share",
                          icon="↗",
                          js_action=(
@@ -134,28 +125,13 @@ class MenuBar:
                              "  alert('Link copied to clipboard');"
                              "}"
                          )),
-                MenuItem("Print",
-                         icon="🖨",
-                         js_action="window.print();"),
-                MenuItem("Export",          page_key="export",         icon="📤",
+                MenuItem("Export",  page_key="export", icon="📤",
                          feature_flag="export"),
-
                 MenuItem("", separator=True),
-
-                # ── History ───────────────────────────────────────────────────
-                MenuItem("History",         page_key="history",        icon="📜",
-                         feature_flag="history"),
-
-                MenuItem("", separator=True),
-
-                # ── Window / tab controls ─────────────────────────────────────
                 MenuItem("Close Tab",
                          icon="✕",
                          js_action="window.close();"),
-                MenuItem("Close Window",
-                         icon="⊠",
-                         js_action="window.close();"),
-                MenuItem("Exit",
+                MenuItem("Exit Window",
                          icon="⏻",
                          js_action=(
                              "if(confirm('Close UHA Inventory?')){"
@@ -164,60 +140,113 @@ class MenuBar:
                          )),
             ]),
 
-            # ── Inventory ────────────────────────────────────────────────────
-            MenuItem(label="Inventory", children=[
-                MenuItem("Dashboard",  page_key="dashboard",  icon="🏠",
+            # ── Dashboards  (spec 3.2) ────────────────────────────────────────
+            # "Database" here = the stats overview for the active cost center,
+            # not a separate DB connection. Switching cost center is in Settings.
+            MenuItem(label="Dashboards", children=[
+                MenuItem("Database",      page_key="dashboard",  icon="🏠",
                          feature_flag="dashboard"),
-                MenuItem("Items",      page_key="inventory",  icon="📦",
+                MenuItem("Inventory",     page_key="inventory",  icon="📦",
                          feature_flag="inventory"),
-                MenuItem("GL Codes",   page_key="gl_codes",   icon="🏷️",
+                MenuItem("PCA",           page_key="pca",        icon="🧪",
+                         feature_flag="pca_engine"),
+                MenuItem("Import",        page_key="import",     icon="📥",
+                         feature_flag="vendor_import"),
+                MenuItem("", separator=True),
+                MenuItem("Count Import",  page_key="count",      icon="📋",
+                         feature_flag="count_import"),
+                MenuItem("Transfer",      page_key="transfer",   icon="🔀",
+                         feature_flag="transfer_engine"),
+                MenuItem("App Management", page_key="app_management", icon="⚙️",
+                         feature_flag="app_management"),
+            ]),
+
+            # ── View  (spec 3.3) ──────────────────────────────────────────────
+            MenuItem(label="View", children=[
+                MenuItem("Full Screen",
+                         icon="⛶",
+                         js_action="document.documentElement.requestFullscreen();"),
+                MenuItem("Style",     page_key="settings", icon="🎨",
+                         feature_flag="settings"),
+                MenuItem("", separator=True),
+                MenuItem("Toggle Sidebar",
+                         icon="◀",
+                         js_action=(
+                             "var btn=document.querySelector('[data-testid=\"collapsedControl\"]')"
+                             "||document.querySelector('[title=\"Open sidebar\"]')"
+                             "||document.querySelector('[title=\"Close sidebar\"]');"
+                             "if(btn)btn.click();"
+                         )),
+                MenuItem("", separator=True),
+                MenuItem("GL Codes",  page_key="gl_codes", icon="🏷️",
                          feature_flag="gl_codes"),
-                MenuItem("History",    page_key="history",    icon="📜",
+                MenuItem("History",   page_key="history",  icon="📜",
                          feature_flag="history"),
-                MenuItem("Export",     page_key="export",     icon="📤",
+                MenuItem("Export",    page_key="export",   icon="📤",
                          feature_flag="export"),
             ]),
 
-            # ── Import ───────────────────────────────────────────────────────
+            # ── Import  (operational shortcut menu) ───────────────────────────
             MenuItem(label="Import", children=[
-                MenuItem("Vendor Invoice",          page_key="import",
-                         icon="📥", feature_flag="vendor_import"),
-                MenuItem("Count Import",             page_key="count_import",
-                         icon="📋", feature_flag="count_import"),
-                MenuItem("Compare Files",            page_key="compare_counts",
-                         icon="📊", feature_flag="compare_counts"),
-                MenuItem("Override & Rule Manager",  page_key="count_overrides",
-                         icon="⚙️"),
-                MenuItem("", separator=True),
-                MenuItem("Import Mode...",           page_key="import_mode_selector",
-                         icon="🧩", feature_flag="import_mode_selector"),
+                MenuItem("Vendor Invoice", page_key="import", icon="📥",
+                         feature_flag="vendor_import"),
+                MenuItem("Count Import",   page_key="count",  icon="📋",
+                         feature_flag="count_import"),
             ]),
 
-            # ── Tools ────────────────────────────────────────────────────────
+            # ── Tools  (gated; hidden until features are enabled) ─────────────
             MenuItem(label="Tools", children=[
-                MenuItem("PCA Creator",       page_key="pca",
-                         icon="🧪", feature_flag="pca_engine"),
-                MenuItem("Transfer Sheet",    page_key="transfer",
-                         icon="🔀", feature_flag="transfer_engine"),
-                MenuItem("Waste Tracking",    page_key="waste",
-                         icon="♻️",  feature_flag="pca_waste_calc"),
-                MenuItem("Historical Inject", page_key="historical",
-                         icon="🕰️",  feature_flag="mode_historical"),
-                MenuItem("In-House Promo",    page_key="promo",
-                         icon="🏠", feature_flag="pca_recursive"),
+                MenuItem("PCA Creator",       page_key="pca",       icon="🧪",
+                         feature_flag="pca_engine"),
+                MenuItem("Transfer Sheet",    page_key="transfer",  icon="🔀",
+                         feature_flag="transfer_engine"),
+                MenuItem("Waste Tracking",    page_key="waste",     icon="♻️",
+                         feature_flag="pca_waste_calc"),
+                MenuItem("Historical Inject", page_key="historical",icon="🕰️",
+                         feature_flag="mode_historical"),
+                MenuItem("In-House Promo",    page_key="promo",     icon="🏠",
+                         feature_flag="pca_recursive"),
             ]),
 
-            # ── Settings ─────────────────────────────────────────────────────
+            # ── Settings ──────────────────────────────────────────────────────
             MenuItem(label="Settings", children=[
-                MenuItem("Feature Toggles",  page_key="settings",
-                         icon="🔧", feature_flag="settings"),
-                MenuItem("Sidebar",          page_key="settings_sidebar",
-                         icon="◀️",  feature_flag="settings"),
-                MenuItem("Preferences",      page_key="settings_prefs",
-                         icon="👤", feature_flag="settings"),
+                MenuItem("Feature Toggles",  page_key="settings",          icon="🔧",
+                         feature_flag="settings"),
                 MenuItem("", separator=True),
-                MenuItem("Database...",      page_key="db_management",
-                         icon="🗄️",  feature_flag="db_management"),
+                # Cost center switcher — uses ?db= param, handled in app.py main()
+                MenuItem("🏢  Overhead",            db_key="57230",
+                         js_action=_cc_js("57230")),
+                MenuItem("🏟️  TDECU Concessions",   db_key="57231",
+                         js_action=_cc_js("57231")),
+                MenuItem("📦  Warehouse",            db_key="57232",
+                         js_action=_cc_js("57232")),
+                MenuItem("⚾  Schroeder Park",       db_key="57233",
+                         js_action=_cc_js("57233")),
+                MenuItem("🥎  Softball Stadium",     db_key="57234",
+                         js_action=_cc_js("57234")),
+                MenuItem("🍽️  Team Dining",          db_key="57235",
+                         js_action=_cc_js("57235")),
+                MenuItem("🎉  Catering",             db_key="57236",
+                         js_action=_cc_js("57236")),
+            ]),
+
+            # ── Help  (spec 3.4) ──────────────────────────────────────────────
+            MenuItem(label="Help", children=[
+                MenuItem("About",
+                         icon="ℹ️",
+                         js_action=(
+                             "alert('UHA IMS\\n"
+                             "Inventory Management System\\n"
+                             "Compass Group · UH Athletics');"
+                         )),
+                MenuItem("What's New",  page_key="changelog",  icon="🆕",
+                         feature_flag="changelog"),
+                MenuItem("", separator=True),
+                MenuItem("Report Issue",
+                         icon="🐛",
+                         js_action=(
+                             "window.open('https://github.com/trechurch/UHAIMS/issues/new','_blank');"
+                         )),
             ]),
         ]
 
@@ -435,14 +464,16 @@ def build_default_registry() -> FeatureRegistry:
     reg.add("gl_codes",             "GL Code Manager",               True)
     reg.add("vendor_import",        "Vendor Invoice Import",         True)
     reg.add("count_import",         "Inventory Count Import",        True)
-    reg.add("compare_counts",       "Compare Count Files",           True)
     reg.add("export",               "Export Inventory",              True)
     reg.add("settings",             "Settings & Feature Toggles",    True)
     reg.add("dashboard",            "Dashboard",                     True)
-    reg.add("import_mode_selector", "Import Mode Selector",          True)
-    reg.add("db_management",        "Database Management",           True)
+    # ── Disabled until modules are built ─────────────────────────────────────
     reg.add("pca_engine",           "PCA Creator & Build Sandbox",   False)
     reg.add("transfer_engine",      "Transfer Sheet Generator",      False)
+    reg.add("app_management",       "App Management Dashboard",      False)
+    reg.add("changelog",            "What's New / Changelog",        False)
+    reg.add("compare_counts",       "Compare Count Files",           False)
+    reg.add("import_mode_selector", "Import Mode Selector",          False)
     reg.add("pca_waste_calc",       "Advanced Waste Tracking",       False)
     reg.add("mode_historical",      "Chronological Data Injection",  False)
     reg.add("pca_recursive",        "In-House Product Promotion",    False)

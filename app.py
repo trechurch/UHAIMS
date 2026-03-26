@@ -33,7 +33,7 @@ Changelog v5.1.0:
   - Sidebar collapse/expand chevron logic improved
 """
 
-__version__ = "5.3.0"
+__version__ = "5.4.0"
 
 import os
 import importlib
@@ -322,6 +322,7 @@ def render_top_nav(feat_registry: FeatureRegistry) -> None:
     """HTML/CSS dropdown fixed to absolute top of browser via MutationObserver."""
     menu_bar = MenuBar(feat_registry)
     cur_page = get_current_page()
+    cur_db   = get_current_database()
 
     def item_html(item: MenuItem) -> str:
         if item.separator:
@@ -333,17 +334,25 @@ def render_top_nav(feat_registry: FeatureRegistry) -> None:
             active = " uha-active" if cur_page == item.page_key else ""
             return f'<a class="uha-nav-item{active}" href="?page={item.page_key}">{lbl}</a>'
         if item.js_action:
+            active = " uha-active" if item.db_key and item.db_key == cur_db else ""
             safe = item.js_action.replace('"', "&quot;")
-            return f'<a class="uha-nav-item" href="#" onclick="{safe}; return false;">{lbl}</a>'
+            return f'<a class="uha-nav-item{active}" href="#" onclick="{safe}; return false;">{lbl}</a>'
         return ""
 
-    menus_html = "".join(
-        f'<div class="uha-nav-menu">'
-        f'<span class="uha-nav-btn">{m.label}</span>'
-        f'<div class="uha-nav-dropdown">{"".join(item_html(c) for c in m.children)}</div>'
-        f'</div>'
-        for m in menu_bar.menus
-    )
+    # Skip menus whose entire dropdown is empty (all items hidden by feature flags)
+    _sep = '<hr class="uha-nav-sep"/>'
+    menu_parts = []
+    for m in menu_bar.menus:
+        children_html = "".join(item_html(c) for c in m.children)
+        if not children_html.replace(_sep, "").strip():
+            continue
+        menu_parts.append(
+            f'<div class="uha-nav-menu">'
+            f'<span class="uha-nav-btn">{m.label}</span>'
+            f'<div class="uha-nav-dropdown">{children_html}</div>'
+            f'</div>'
+        )
+    menus_html = "".join(menu_parts)
 
     fixed_css = _NAV_CSS + """
     <style>
@@ -591,6 +600,16 @@ def _page_settings(db, feat_registry: FeatureRegistry, syncer: VersionSyncer) ->
 
 def main() -> None:
     feat_registry = get_feature_registry()
+
+    # ── Cost center switch from nav ?db= param ────────────────────────
+    # Top nav items inject ?db=57231 into the URL via JS to switch cost
+    # centers. Handle it here before auth so DB factory stays in sync.
+    _db_switch = st.query_params.get("db")
+    if _db_switch and _db_switch in COST_CENTERS:
+        set_current_database(_db_switch)
+        del st.query_params["db"]
+        st.rerun()
+        return
 
     # ── Auth gate ─────────────────────────────────────────────────────
     # Note: Auth happens before database connection

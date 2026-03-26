@@ -21,6 +21,10 @@ from database import get_conn
 INGREDIENT_TYPE_FOOD = "food"
 INGREDIENT_TYPE_DISPOSABLE = "disposable"
 
+# Texas sales tax — selling price includes tax, so divide out before computing cost %
+# Formula: cost_pct = cost_per_portion / (selling_price / TAX_ADJUSTMENT_FACTOR)
+TAX_ADJUSTMENT_FACTOR = 1.0825
+
 UNIT_ALIASES = {
     "OZ": "Ounce",
     "OUNCE": "Ounce",
@@ -70,11 +74,12 @@ def calc_ep_cost(unit_cost: float, ep_amount: float) -> float:
 
 
 def calc_product_cost_pct(cost_per_portion: float, selling_price: float) -> float:
-    """Actual product cost percentage."""
+    """Actual product cost percentage, adjusted for Texas sales tax (8.25%).
+    Selling price includes tax, so the tax-adjusted price is used as the denominator."""
     sp = _safe_float(selling_price, 1.0)
     if sp == 0:
         return 0.0
-    return cost_per_portion / sp
+    return cost_per_portion / (sp / TAX_ADJUSTMENT_FACTOR)
 
 
 def calc_per_serving_cost_goal(selling_price: float, cost_pct_goal: float) -> float:
