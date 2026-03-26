@@ -6,6 +6,7 @@
 #  Counters enter quantities; session is saved and then committed to QOH.
 # ──────────────────────────────────────────────────────────────────────────────
 
+import io
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime
@@ -87,11 +88,13 @@ class CountEntryDashboard(Dashboard):
     def render(self) -> None:
         st.title("📝 Count Entry")
 
-        tab1, tab2 = st.tabs(["✏️ Active Count", "📋 Count History"])
+        tab1, tab2, tab3 = st.tabs(["✏️ Active Count", "📋 Count History", "🖨️ Print Blank Sheet"])
         with tab1:
             self._render_active_count()
         with tab2:
             self._render_history()
+        with tab3:
+            self._render_print_blank()
 
     # ── Active Count ──────────────────────────────────────────────────────────
 
@@ -361,5 +364,222 @@ class CountEntryDashboard(Dashboard):
                 st.session_state["ce_session_id"] = resume_id
                 st.session_state["ce_counts"]     = resumed_counts
                 st.rerun()
+
+    # ── Print Blank Count Sheet ───────────────────────────────────────────────
+
+    def _render_print_blank(self) -> None:
+        st.subheader("🖨️ Print Blank Count Sheet")
+        st.caption(
+            "Generates a formatted Excel workbook — one sheet per location. "
+            "Open in Excel or Google Sheets and print."
+        )
+
+        # Cost center map — all UHA locations
+        CC_OPTIONS = {
+            "57230 — Overhead":            "57230",
+            "57231 — TDECU Concessions":   "57231",
+            "57232 — Warehouse / Fertitta":"57232",
+            "57233 — Schroeder Park":      "57233",
+            "57234 — Softball Stadium":    "57234",
+            "57235 — Team Dining":         "57235",
+            "57236 — Catering":            "57236",
+        }
+
+        selected_labels = st.multiselect(
+            "Select locations",
+            list(CC_OPTIONS.keys()),
+            default=["57231 — TDECU Concessions"],
+            key="blank_sheet_locs",
+        )
+        count_date = st.date_input("Count Date", value=date.today(),
+                                   key="blank_sheet_date")
+        include_cost = st.checkbox("Include unit cost column", value=True,
+                                   key="blank_sheet_cost")
+
+        if not selected_labels:
+            st.info("Select at least one location.")
+            return
+
+        if st.button("📥 Generate Count Sheet", type="primary",
+                     key="blank_sheet_gen"):
+            wb = self._build_workbook(
+                selected_labels, CC_OPTIONS, count_date, include_cost
+            )
+            if wb is None:
+                return
+            buf = io.BytesIO()
+            wb.save(buf)
+            buf.seek(0)
+            fname = f"count_sheet_{count_date.strftime('%Y%m%d')}.xlsx"
+            st.download_button(
+                f"⬇️ Download {fname}",
+                data=buf,
+                file_name=fname,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="blank_sheet_dl",
+            )
+
+    def _build_workbook(self, selected_labels, cc_map, count_date, include_cost):
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import (Font, PatternFill, Alignment,
+                                          Border, Side, numbers)
+            from openpyxl.utils import get_column_letter
+        except ImportError:
+            st.error("openpyxl is required — run: pip install openpyxl")
+            return None
+
+        wb = Workbook()
+        wb.remove(wb.active)  # remove default blank sheet
+
+        thin = Side(style="thin", color="BBBBBB")
+        thick = Side(style="medium", color="888888")
+        cell_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        header_border = Border(left=thick, right=thick, top=thick, bottom=thick)
+
+        hdr_fill   = PatternFill("solid", fgColor="1A1A2E")  # nav dark blue
+        gl_fill    = PatternFill("solid", fgColor="16213E")
+        alt_fill   = PatternFill("solid", fgColor="F8FAFC")
+        white_fill = PatternFill("solid", fgColor="FFFFFF")
+
+        hdr_font   = Font(bold=True, color="FFFFFF", size=10)
+        gl_font    = Font(bold=True, color="E63946", size=9)   # nav red
+        body_font  = Font(size=9)
+
+        center = Alignment(horizontal="center", vertical="center", wrap_text=False)
+        left   = Alignment(horizontal="left",   vertical="center")
+
+        for label in selected_labels:
+            cc_code = cc_map[label]
+            short   = label.split("—")[1].strip()[:28]   # sheet tab name
+
+            # Load items for this cost center
+            items = self.db.get_items_by_cost_center(cc_code)
+            if not items:
+                # Try unfiltered fallback — items may not have cost_center tagged yet
+                items = self.db.get_all_items("active")
+
+            ws = wb.create_sheet(title=short[:31])
+
+            # ── Title rows ────────────────────────────────────────────────────
+            ws.merge_cells("A1:G1")
+            t = ws["A1"]
+            t.value       = f"UHA INVENTORY COUNT SHEET — {short.upper()}"
+            t.font        = Font(bold=True, color="FFFFFF", size=12)
+            t.fill        = PatternFill("solid", fgColor="1A1A2E")
+            t.alignment   = Alignment(horizontal="center", vertical="center")
+            ws.row_dimensions[1].height = 22
+
+            ws.merge_cells("A2:G2")
+            d = ws["A2"]
+            d.value     = f"Count Date: {count_date.strftime('%A, %B %d, %Y')}          Location: {label}"
+            d.font      = Font(italic=True, size=9, color="444444")
+            d.alignment = Alignment(horizontal="left", vertical="center")
+            ws.row_dimensions[2].height = 14
+
+            # ── Column headers ────────────────────────────────────────────────
+            if include_cost:
+                col_headers = ["GL Code", "Description", "Pack Type",
+                               "Unit Cost", "COUNT", "UNIT", "NOTES"]
+                col_widths  = [10, 42, 14, 11, 9, 8, 18]
+            else:
+                col_headers = ["GL Code", "Description", "Pack Type",
+                               "COUNT", "UNIT", "NOTES"]
+                col_widths  = [10, 46, 14, 9, 8, 20]
+
+            for ci, (hdr, w) in enumerate(zip(col_headers, col_widths), start=1):
+                c = ws.cell(row=3, column=ci, value=hdr)
+                c.font      = hdr_font
+                c.fill      = hdr_fill
+                c.alignment = center if ci > 2 else left
+                c.border    = header_border
+                ws.column_dimensions[get_column_letter(ci)].width = w
+            ws.row_dimensions[3].height = 16
+
+            # ── Sort items by GL code → description ───────────────────────────
+            from collections import defaultdict
+            groups: dict = defaultdict(list)
+            for item in items:
+                gl_key = item.get("gl_code") or "ZZZ"
+                groups[gl_key].append(item)
+
+            row = 4
+            for gl_code in sorted(groups.keys()):
+                group_items = groups[gl_code]
+                gl_name     = (group_items[0].get("gl_name") or "").upper()
+                gl_label    = f"{gl_code}  —  {gl_name}" if gl_name else gl_code
+
+                # GL group header row
+                last_col = len(col_headers)
+                ws.merge_cells(
+                    start_row=row, start_column=1,
+                    end_row=row,   end_column=last_col
+                )
+                gh = ws.cell(row=row, column=1, value=gl_label)
+                gh.font      = gl_font
+                gh.fill      = gl_fill
+                gh.alignment = left
+                gh.border    = cell_border
+                ws.row_dimensions[row].height = 13
+                row += 1
+
+                for i, item in enumerate(
+                    sorted(group_items, key=lambda x: x.get("description") or "")
+                ):
+                    fill = white_fill if i % 2 == 0 else alt_fill
+                    cost = float(item.get("cost") or 0)
+                    conv = float(item.get("conv_ratio") or 1)
+                    uc   = cost / conv if conv > 1 else cost
+
+                    if include_cost:
+                        row_vals = [
+                            item.get("gl_code") or "",
+                            item.get("description") or "",
+                            item.get("pack_type") or "",
+                            uc,
+                            "",   # COUNT — blank for writing
+                            "",   # UNIT
+                            "",   # NOTES
+                        ]
+                    else:
+                        row_vals = [
+                            item.get("gl_code") or "",
+                            item.get("description") or "",
+                            item.get("pack_type") or "",
+                            "",   # COUNT
+                            "",   # UNIT
+                            "",   # NOTES
+                        ]
+
+                    for ci, val in enumerate(row_vals, start=1):
+                        c = ws.cell(row=row, column=ci, value=val)
+                        c.font      = body_font
+                        c.fill      = fill
+                        c.border    = cell_border
+                        # Cost column — currency format
+                        if include_cost and ci == 4 and isinstance(val, float):
+                            c.number_format = '"$"#,##0.0000'
+                            c.alignment = center
+                        elif ci > (3 if not include_cost else 4):
+                            c.alignment = center
+                        else:
+                            c.alignment = left
+
+                    ws.row_dimensions[row].height = 13
+                    row += 1
+
+            # Freeze top 3 rows
+            ws.freeze_panes = "A4"
+
+            # Print settings
+            ws.page_setup.orientation      = "portrait"
+            ws.page_setup.paperSize        = ws.PAPERSIZE_LETTER
+            ws.page_setup.fitToPage        = True
+            ws.page_setup.fitToWidth       = 1
+            ws.page_setup.fitToHeight      = 0
+            ws.print_title_rows            = "1:3"
+            ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+        return wb
 
 # ── end of CountEntryDashboard ────────────────────────────────────────────────
