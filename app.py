@@ -171,9 +171,8 @@ def set_current_database(code: str) -> None:
 @st.cache_resource
 def get_db(_db_code: str = None) -> InventoryDatabase:
     """
-    Database factory — single Supabase instance for all cost centers.
-    Cost center filtering is handled via the cost_center column in queries.
-    _db_code is accepted for API compatibility but ignored.
+    Database factory — single Supabase instance, filtered by cost_center.
+    Cached per cost_center code so switching cost centers creates a fresh instance.
     """
     try:
         db_url = st.secrets.get("SUPABASE_DB_URL") or os.environ.get("SUPABASE_DB_URL", "")
@@ -183,7 +182,7 @@ def get_db(_db_code: str = None) -> InventoryDatabase:
         raise RuntimeError(
             "No database configured. Add SUPABASE_DB_URL to Streamlit secrets."
         )
-    return InventoryDatabase(db_url=db_url)
+    return InventoryDatabase(db_url=db_url, cost_center=_db_code)
 
 
 @st.cache_resource
@@ -348,20 +347,26 @@ def render_top_nav(feat_registry: FeatureRegistry) -> None:
     _cv1.html(f"""
 <script>
 (function() {{
-  var pd = window.parent.document;
+  try {{
+    var pd = window.parent.document;
 
-  // Upsert <style id="uha-nav-css"> in <head>
-  var s = pd.getElementById('uha-nav-css');
-  if (!s) {{ s = pd.createElement('style'); s.id = 'uha-nav-css'; pd.head.appendChild(s); }}
-  s.textContent = `{_css_js}`;
+    // Inject CSS into <head>
+    var s = pd.getElementById('uha-nav-css');
+    if (!s) {{ s = pd.createElement('style'); s.id = 'uha-nav-css'; pd.head.appendChild(s); }}
+    s.textContent = `{_css_js}`;
 
-  // Upsert <div id="uha-topnav-root"> in <body>
-  var n = pd.getElementById('uha-topnav-root');
-  if (!n) {{ n = pd.createElement('div'); n.id = 'uha-topnav-root'; pd.body.appendChild(n); }}
-  n.innerHTML = `{_nav_js}`;
+    // Inject nav div into <body>
+    var n = pd.getElementById('uha-topnav-root');
+    if (!n) {{ n = pd.createElement('div'); n.id = 'uha-topnav-root'; pd.body.appendChild(n); }}
+    n.innerHTML = `{_nav_js}`;
+
+    // Hide Streamlit's built-in header so it doesn't overlap
+    var hdr = pd.querySelector('header[data-testid="stHeader"]');
+    if (hdr) hdr.style.display = 'none';
+  }} catch(e) {{ console.warn('UHA nav inject failed:', e); }}
 }})();
 </script>
-""", height=0)
+""", height=1, scrolling=False)
 
     # Spacer so page content doesn't hide under the fixed bar
     st.markdown('<div style="height:46px"></div>', unsafe_allow_html=True)

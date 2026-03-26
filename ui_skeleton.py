@@ -153,8 +153,10 @@ class MenuBar:
                 MenuItem("Import",        page_key="import",     icon="📥",
                          feature_flag="vendor_import"),
                 MenuItem("", separator=True),
-                MenuItem("Count Import",  page_key="count",      icon="📋",
+                MenuItem("Count Import",  page_key="count",       icon="📋",
                          feature_flag="count_import"),
+                MenuItem("Count Entry",   page_key="count_entry", icon="📝",
+                         feature_flag="count_entry"),
                 MenuItem("Transfer",      page_key="transfer",   icon="🔀",
                          feature_flag="transfer_engine"),
                 MenuItem("App Management", page_key="app_management", icon="⚙️",
@@ -188,10 +190,12 @@ class MenuBar:
 
             # ── Import  (operational shortcut menu) ───────────────────────────
             MenuItem(label="Import", children=[
-                MenuItem("Vendor Invoice", page_key="import", icon="📥",
+                MenuItem("Vendor Invoice / Auto-Detect", page_key="import", icon="📥",
                          feature_flag="vendor_import"),
-                MenuItem("Count Import",   page_key="count",  icon="📋",
+                MenuItem("Count Import (file)",   page_key="count",       icon="📋",
                          feature_flag="count_import"),
+                MenuItem("Count Entry (manual)",  page_key="count_entry", icon="📝",
+                         feature_flag="count_entry"),
             ]),
 
             # ── Tools  (gated; hidden until features are enabled) ─────────────
@@ -470,6 +474,7 @@ def build_default_registry() -> FeatureRegistry:
     # ── Enabled modules ──────────────────────────────────────────────────────
     reg.add("pca_engine",           "PCA Creator & Build Sandbox",   True)
     reg.add("transfer_engine",      "Transfer Sheet Generator",      True)
+    reg.add("count_entry",          "Physical Count Entry",          True)
     # ── Disabled until modules are built ─────────────────────────────────────
     reg.add("app_management",       "App Management Dashboard",      False)
     reg.add("changelog",            "What's New / Changelog",        False)

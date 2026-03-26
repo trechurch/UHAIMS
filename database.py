@@ -153,12 +153,30 @@ class InventoryDatabase:
     #  INIT
     # ──────────────────────────────────────────────────────────────────────────
 
-    def __init__(self, db_url: str = None):
+    def __init__(self, db_url: str = None, cost_center: str = None):
         if db_url:
             os.environ["SUPABASE_DB_URL"] = db_url
+        self._cc = cost_center  # active cost center filter; None = all
         self.create_tables()
 
     # ── end of init ───────────────────────────────────────────────────────────
+
+
+    # ──────────────────────────────────────────────────────────────────────────
+    #  COST CENTER FILTER HELPER
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _cc_clause(self, prefix: str = "AND") -> Tuple[str, list]:
+        """
+        Returns (sql_fragment, params) to append cost_center filtering.
+        prefix is "AND" when used after existing WHERE conditions,
+        or "WHERE" when it starts the WHERE clause.
+        """
+        if self._cc:
+            return f" {prefix} cost_center = %s", [self._cc]
+        return "", []
+
+    # ── end of cost center helper ─────────────────────────────────────────────
 
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -246,12 +264,44 @@ class InventoryDatabase:
                     notes         TEXT
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_items_description  ON items(description);
-                CREATE INDEX IF NOT EXISTS idx_items_gl_code      ON items(gl_code);
-                CREATE INDEX IF NOT EXISTS idx_items_vendor       ON items(vendor);
-                CREATE INDEX IF NOT EXISTS idx_history_item_key   ON item_history(item_key);
-                CREATE INDEX IF NOT EXISTS idx_import_jobs_status ON import_jobs(status);
+                CREATE TABLE IF NOT EXISTS count_sessions (
+                    session_id    TEXT PRIMARY KEY,
+                    cost_center   TEXT NOT NULL,
+                    count_date    DATE NOT NULL,
+                    status        TEXT DEFAULT 'open',
+                    created_by    TEXT,
+                    created_at    TIMESTAMPTZ DEFAULT NOW(),
+                    committed_at  TIMESTAMPTZ,
+                    committed_by  TEXT,
+                    notes         TEXT,
+                    item_count    INTEGER DEFAULT 0,
+                    total_value   NUMERIC(12,4) DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS count_lines (
+                    line_id           SERIAL PRIMARY KEY,
+                    session_id        TEXT REFERENCES count_sessions(session_id)
+                                      ON DELETE CASCADE,
+                    item_key          TEXT NOT NULL,
+                    description       TEXT,
+                    pack_type         TEXT,
+                    gl_code           TEXT,
+                    gl_name           TEXT,
+                    unit_cost         NUMERIC(10,4) DEFAULT 0,
+                    quantity_counted  NUMERIC(10,4) DEFAULT 0,
+                    extended_value    NUMERIC(12,4) DEFAULT 0,
+                    notes             TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_items_description   ON items(description);
+                CREATE INDEX IF NOT EXISTS idx_items_gl_code       ON items(gl_code);
+                CREATE INDEX IF NOT EXISTS idx_items_vendor        ON items(vendor);
+                CREATE INDEX IF NOT EXISTS idx_items_cost_center   ON items(cost_center);
+                CREATE INDEX IF NOT EXISTS idx_history_item_key    ON item_history(item_key);
+                CREATE INDEX IF NOT EXISTS idx_import_jobs_status  ON import_jobs(status);
                 CREATE INDEX IF NOT EXISTS idx_import_jobs_started ON import_jobs(started_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_count_sessions_cc   ON count_sessions(cost_center);
+                CREATE INDEX IF NOT EXISTS idx_count_lines_session ON count_lines(session_id);
 
                 CREATE TABLE IF NOT EXISTS users (
                     username      TEXT PRIMARY KEY,
@@ -300,6 +350,8 @@ class InventoryDatabase:
         item_data.setdefault("quantity_on_hand", 0)
         item_data.setdefault("is_chargeable",    True)
         item_data.setdefault("status_tag",       "Standard")
+        if self._cc and not item_data.get("cost_center"):
+            item_data["cost_center"] = self._cc
 
         cols         = list(item_data.keys())
         vals         = list(item_data.values())
@@ -352,53 +404,60 @@ class InventoryDatabase:
             return dict(row) if row else None
 
     def get_all_items(self, record_status: str = "active") -> List[Dict]:
+        cc_sql, cc_p = self._cc_clause("AND")
         with get_conn() as conn:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             if record_status:
                 cur.execute(
-                    "SELECT * FROM items WHERE record_status = %s ORDER BY description",
-                    (record_status,)
+                    f"SELECT * FROM items WHERE record_status = %s{cc_sql} ORDER BY description",
+                    [record_status] + cc_p,
                 )
             else:
-                cur.execute("SELECT * FROM items ORDER BY description")
+                wh, p = ("WHERE" + cc_sql[4:], cc_p) if cc_sql else ("", [])
+                cur.execute(f"SELECT * FROM items {wh} ORDER BY description", p)
             return [dict(r) for r in cur.fetchall()]
 
     def get_last_updated(self) -> Optional[datetime]:
-        """Return the most recent last_updated timestamp from active items."""
+        cc_sql, cc_p = self._cc_clause("AND")
         with get_conn() as conn:
             cur = conn.cursor()
             cur.execute(
-                "SELECT MAX(last_updated) FROM items WHERE record_status = 'active'"
+                f"SELECT MAX(last_updated) FROM items WHERE record_status = 'active'{cc_sql}",
+                cc_p,
             )
             row = cur.fetchone()
             return row[0] if row and row[0] else None
 
     def get_items_by_cost_center(self, cost_center: str) -> List[Dict]:
+        """Explicit cost center override — ignores self._cc."""
         with get_conn() as conn:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             cur.execute(
                 "SELECT * FROM items WHERE cost_center = %s "
                 "AND record_status = 'active' ORDER BY description",
-                (cost_center,)
+                (cost_center,),
             )
             return [dict(r) for r in cur.fetchall()]
 
     def get_low_stock_items(self) -> List[Dict]:
+        cc_sql, cc_p = self._cc_clause("AND")
         with get_conn() as conn:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cur.execute("""
+            cur.execute(f"""
                 SELECT * FROM items
                 WHERE quantity_on_hand < reorder_point
                   AND record_status = 'active'
                   AND reorder_point > 0
+                  {cc_sql.lstrip()}
                 ORDER BY (reorder_point - quantity_on_hand) DESC
-            """)
+            """, cc_p)
             return [dict(r) for r in cur.fetchall()]
 
     def get_inventory_value(self) -> float:
+        cc_sql, cc_p = self._cc_clause("AND")
         with get_conn() as conn:
             cur = conn.cursor()
-            cur.execute("""
+            cur.execute(f"""
                 SELECT SUM(
                     quantity_on_hand *
                     CASE
@@ -409,36 +468,40 @@ class InventoryDatabase:
                     END
                 )
                 FROM items
-                WHERE record_status = 'active'
-            """)
+                WHERE record_status = 'active'{cc_sql}
+            """, cc_p)
             result = cur.fetchone()[0]
             return float(result) if result else 0.0
 
     def search_items(self, term: str) -> List[Dict]:
         p = f"%{term.upper()}%"
+        cc_sql, cc_p = self._cc_clause("AND")
         with get_conn() as conn:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cur.execute("""
+            cur.execute(f"""
                 SELECT * FROM items
-                WHERE UPPER(key) LIKE %s
+                WHERE (
+                    UPPER(key) LIKE %s
                    OR UPPER(description) LIKE %s
                    OR UPPER(vendor) LIKE %s
                    OR gl_code LIKE %s
                    OR UPPER(brand) LIKE %s
+                ){cc_sql}
                 ORDER BY description
-            """, (p, p, p, p, p))
+            """, [p, p, p, p, p] + cc_p)
             return [dict(r) for r in cur.fetchall()]
 
     def count_items(self, record_status: str = None) -> int:
+        cc_sql, cc_p = self._cc_clause("AND" if record_status else "WHERE")
         with get_conn() as conn:
             cur = conn.cursor()
             if record_status:
                 cur.execute(
-                    "SELECT COUNT(*) FROM items WHERE record_status = %s",
-                    (record_status,)
+                    f"SELECT COUNT(*) FROM items WHERE record_status = %s{cc_sql}",
+                    [record_status] + cc_p,
                 )
             else:
-                cur.execute("SELECT COUNT(*) FROM items")
+                cur.execute(f"SELECT COUNT(*) FROM items{cc_sql}", cc_p)
             return cur.fetchone()[0]
 
     def item_exists(self, key: str) -> bool:
@@ -641,6 +704,103 @@ class InventoryDatabase:
         )
 
     # ── end of import job tracker ─────────────────────────────────────────────
+
+
+    # ──────────────────────────────────────────────────────────────────────────
+    #  COUNT SESSION METHODS
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def create_count_session(self, count_date, created_by: str = "user",
+                              notes: str = "") -> str:
+        session_id = str(uuid.uuid4())
+        cc = self._cc or "all"
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO count_sessions
+                    (session_id, cost_center, count_date, status, created_by, notes)
+                VALUES (%s, %s, %s, 'open', %s, %s)
+            """, (session_id, cc, count_date, created_by, notes))
+        return session_id
+
+    def save_count_lines(self, session_id: str, lines: List[Dict]) -> None:
+        """Replace all lines for a session (upsert by session_id)."""
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM count_lines WHERE session_id = %s", (session_id,))
+            for l in lines:
+                cur.execute("""
+                    INSERT INTO count_lines
+                        (session_id, item_key, description, pack_type,
+                         gl_code, gl_name, unit_cost, quantity_counted,
+                         extended_value, notes)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """, (session_id, l["item_key"], l.get("description"),
+                      l.get("pack_type"), l.get("gl_code"), l.get("gl_name"),
+                      l.get("unit_cost", 0), l.get("quantity_counted", 0),
+                      l.get("extended_value", 0), l.get("notes", "")))
+            total = sum(float(l.get("extended_value", 0)) for l in lines)
+            cur.execute("""
+                UPDATE count_sessions
+                SET item_count = %s, total_value = %s
+                WHERE session_id = %s
+            """, (len(lines), total, session_id))
+
+    def commit_count_session(self, session_id: str,
+                              committed_by: str = "user") -> Dict:
+        """Write counted quantities to items.quantity_on_hand, mark session committed."""
+        lines = self.get_count_lines(session_id)
+        updated, errors = 0, []
+        for l in lines:
+            try:
+                self._apply_update(
+                    l["item_key"],
+                    {"quantity_on_hand": float(l["quantity_counted"]),
+                     "last_updated": datetime.utcnow()},
+                    change_source="count_entry",
+                    changed_by=committed_by,
+                )
+                updated += 1
+            except Exception as exc:
+                errors.append(f"{l['item_key']}: {exc}")
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                UPDATE count_sessions
+                SET status = 'committed', committed_at = NOW(), committed_by = %s
+                WHERE session_id = %s
+            """, (committed_by, session_id))
+        return {"updated": updated, "errors": errors}
+
+    def get_count_session(self, session_id: str) -> Optional[Dict]:
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("SELECT * FROM count_sessions WHERE session_id = %s",
+                        (session_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def get_count_lines(self, session_id: str) -> List[Dict]:
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("""
+                SELECT * FROM count_lines WHERE session_id = %s
+                ORDER BY gl_code, description
+            """, (session_id,))
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_recent_count_sessions(self, limit: int = 20) -> List[Dict]:
+        cc_sql, cc_p = self._cc_clause("AND")
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(f"""
+                SELECT * FROM count_sessions
+                WHERE 1=1{cc_sql}
+                ORDER BY created_at DESC LIMIT %s
+            """, cc_p + [limit])
+            return [dict(r) for r in cur.fetchall()]
+
+    # ── end of count session methods ──────────────────────────────────────────
 
 
     # ──────────────────────────────────────────────────────────────────────────
