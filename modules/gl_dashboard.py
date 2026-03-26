@@ -103,19 +103,189 @@ class GLDashboard(Dashboard):
 
         st.markdown("---")
 
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "🏢 Cost Center", "🏷️ Bulk GL Assign",
-            "📂 Upload Mapping", "🤖 Auto-Assign",
+        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+            "🏢 Cost Center", "📁 GL Lists Import",
+            "🏷️ Bulk GL Assign", "📂 Upload Mapping", "🤖 Auto-Assign",
         ])
 
         with tab1:
             self._tab_cost_center(no_cc, total)
         with tab2:
-            self._tab_bulk_gl(items)
+            self._tab_gl_lists()
         with tab3:
-            self._tab_upload_mapping()
+            self._tab_bulk_gl(items)
         with tab4:
+            self._tab_upload_mapping()
+        with tab5:
             self._tab_auto_assign()
+
+    # ── Tab 2: GL Lists Import ────────────────────────────────────────────────
+
+    def _tab_gl_lists(self) -> None:
+        from gl_lists_importer import (
+            scan_gl_lists_folder, assign_gl_codes,
+            import_as_master, GL_LISTS_DIR,
+        )
+
+        st.subheader("📁 GL Lists Import")
+        st.caption(f"Reading from: `{GL_LISTS_DIR}`")
+
+        categories = scan_gl_lists_folder()
+        if not categories:
+            st.error(
+                f"No GL list files found in `{GL_LISTS_DIR}`. "
+                "Make sure the 'GL Lists' folder is in the repo root."
+            )
+            return
+
+        # ── Summary table ─────────────────────────────────────────────────────
+        summary_df = pd.DataFrame([{
+            "GL Name":   c["gl_name"],
+            "GL Code":   c["gl_code"],
+            "Items":     len(c["items"]),
+        } for c in categories])
+        total_items = summary_df["Items"].sum()
+
+        cc1, cc2, cc3 = st.columns(3)
+        cc1.metric("GL Categories", len(categories))
+        cc2.metric("Total Items in Files", f"{total_items:,}")
+        cc3.metric("Already in DB", self.db.count_items())
+
+        st.dataframe(summary_df, use_container_width=True,
+                     hide_index=True, height=min(400, 35*len(categories)+38))
+
+        st.markdown("---")
+
+        # ── Mode selector ─────────────────────────────────────────────────────
+        mode = st.radio(
+            "What do you want to do?",
+            [
+                "🏷️  Assign GL codes to existing items (fuzzy description match)",
+                "📦  Import as master list (add all items, blank quantities)",
+            ],
+            key="gl_lists_mode",
+        )
+
+        # ── Shared options ────────────────────────────────────────────────────
+        CC_OPTIONS = {
+            "57230 — Overhead":             "57230",
+            "57231 — TDECU Concessions":    "57231",
+            "57232 — Warehouse / Fertitta": "57232",
+            "57233 — Schroeder Park":       "57233",
+            "57234 — Softball Stadium":     "57234",
+            "57235 — Team Dining":          "57235",
+            "57236 — Catering":             "57236",
+        }
+
+        if mode.startswith("🏷️"):
+            # ── Assign GL codes ───────────────────────────────────────────────
+            st.markdown("**Match existing inventory descriptions to GL list items.**")
+            st.caption(
+                "Uses fuzzy string matching. Items whose descriptions score "
+                "above the threshold get their GL code updated."
+            )
+            threshold = st.slider(
+                "Match confidence threshold (higher = stricter)",
+                50, 95, 72, key="gl_lists_threshold",
+            )
+            only_unset = st.checkbox(
+                "Only update items that have no GL code yet",
+                value=True, key="gl_lists_only_unset",
+            )
+
+            if st.button("🔍 Preview Matches", key="gl_lists_preview"):
+                with st.spinner("Running fuzzy match…"):
+                    # Preview only — pass a throw-away lambda instead of db.update_item
+                    preview = assign_gl_codes(
+                        self.db, categories,
+                        min_score=threshold,
+                        changed_by="preview",
+                        only_unassigned=only_unset,
+                    )
+                st.info(
+                    f"Would assign: **{preview['assigned']}**  ·  "
+                    f"No match: **{preview['no_match']}**  ·  "
+                    f"Already set (skipped): **{preview['skipped']}**"
+                )
+                if preview["matches"]:
+                    st.dataframe(
+                        pd.DataFrame(preview["matches"])[
+                            ["item", "matched_to", "score", "gl_code", "gl_name"]
+                        ],
+                        use_container_width=True, hide_index=True, height=350,
+                    )
+                st.session_state["gl_lists_preview_done"] = True
+
+            if st.session_state.get("gl_lists_preview_done"):
+                confirmed = st.checkbox(
+                    "Confirm: write these GL code assignments",
+                    key="gl_lists_assign_confirm",
+                )
+                if st.button("✅ Assign GL Codes", type="primary",
+                             disabled=not confirmed, key="gl_lists_assign_go"):
+                    with st.spinner("Writing…"):
+                        result = assign_gl_codes(
+                            self.db, categories,
+                            min_score=threshold,
+                            changed_by=_get_changed_by(),
+                            only_unassigned=only_unset,
+                        )
+                    st.success(
+                        f"✅ Assigned: **{result['assigned']}**  ·  "
+                        f"No match: **{result['no_match']}**  ·  "
+                        f"Skipped: **{result['skipped']}**"
+                    )
+                    st.session_state["gl_lists_preview_done"] = False
+                    st.rerun()
+
+        else:
+            # ── Import as master list ─────────────────────────────────────────
+            st.markdown("**Import every item from every GL file into the database.**")
+            st.caption(
+                "Items with duplicate descriptions (same generated key) are skipped "
+                "by default. Quantities are left at 0."
+            )
+
+            cc_label  = st.selectbox(
+                "Tag all imported items to cost center",
+                list(CC_OPTIONS.keys()), index=1,
+                key="gl_lists_cc",
+            )
+            cc_code   = CC_OPTIONS[cc_label]
+            skip_dup  = st.checkbox(
+                "Skip items already in the database (recommended)",
+                value=True, key="gl_lists_skip_dup",
+            )
+
+            st.info(
+                f"This will attempt to add up to **{total_items:,}** items "
+                f"tagged to **{cc_label}** with GL codes pre-assigned. "
+                "Prices from the GL files will be used as the initial cost."
+            )
+
+            confirmed = st.checkbox(
+                f"Confirm: import up to {total_items:,} items",
+                key="gl_lists_import_confirm",
+            )
+            if st.button("📦 Import Master List", type="primary",
+                         disabled=not confirmed, key="gl_lists_import_go"):
+                with st.spinner(f"Importing up to {total_items:,} items…"):
+                    result = import_as_master(
+                        self.db, categories,
+                        cost_center=cc_code,
+                        changed_by=_get_changed_by(),
+                        skip_existing=skip_dup,
+                    )
+                st.success(
+                    f"✅ Added: **{result['added']:,}**  ·  "
+                    f"Updated: **{result['updated']:,}**  ·  "
+                    f"Skipped: **{result['skipped']:,}**"
+                )
+                if result["errors"]:
+                    with st.expander(f"⚠️ {len(result['errors'])} errors"):
+                        for e in result["errors"]:
+                            st.caption(e)
+                st.rerun()
 
     # ── Tab 1: Cost Center ────────────────────────────────────────────────────
 
