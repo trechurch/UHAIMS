@@ -215,12 +215,19 @@ def set_page(key: str) -> None:
 
 _NAV_CSS = """
 <style>
+/* Remove Streamlit's default block-container top padding so nav sits flush */
+div[data-testid="block-container"] {
+    padding-top: 0 !important;
+    padding-bottom: 1rem !important;
+}
 #uha-topnav-root {
-    position: fixed;
+    position: sticky;
     top: 0;
     left: 0;
     right: 0;
-    z-index: 1000000;
+    z-index: 999999;
+    margin-left: calc(-1 * var(--block-container-padding-left, 1rem));
+    margin-right: calc(-1 * var(--block-container-padding-right, 1rem));
 }
 
 /* Push sidebar below the nav bar */
@@ -372,53 +379,23 @@ def render_top_nav(feat_registry: FeatureRegistry) -> None:
                 _shortcut_map[_c.shortcut.upper()] = f"__js__{_c.js_action}"
     _shortcut_js_map = str(_shortcut_map).replace("'", '"')
 
-    # Inject nav + CSS directly into parent document body via components iframe.
-    # st.components.v1.html() runs in a same-origin iframe; window.parent gives
-    # access to the real page DOM, so position:fixed pins to the actual viewport.
-    # A MutationObserver on document.body re-injects the nav if React wipes it.
+    # Nav HTML + CSS rendered directly into React's content tree via st.markdown.
+    # position:sticky keeps it at the top of the viewport on scroll without
+    # needing window.parent access or any iframe trickery.
+    st.markdown(
+        _NAV_CSS
+        + '<style>header[data-testid="stHeader"]{display:none!important}</style>'
+        + f'<div id="uha-topnav-root">{nav_inner}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Keyboard shortcuts only — tiny iframe, one-time registration
     import streamlit.components.v1 as _cv1
     _cv1.html(f"""
 <script>
 (function() {{
   try {{
     var pd = window.parent.document;
-    var pw = window.parent;
-
-    // Store latest nav/css in parent window so observer can re-use them
-    pw._uhaNavHtml = `{_nav_js}`;
-    pw._uhaCssHtml = `{_css_js}`;
-
-    function _uhaInjectNav() {{
-      var s = pd.getElementById('uha-nav-css');
-      if (!s) {{ s = pd.createElement('style'); s.id = 'uha-nav-css'; pd.head.appendChild(s); }}
-      s.textContent = pw._uhaCssHtml;
-
-      var n = pd.getElementById('uha-topnav-root');
-      if (!n) {{ n = pd.createElement('div'); n.id = 'uha-topnav-root'; pd.body.appendChild(n); }}
-      n.innerHTML = pw._uhaNavHtml;
-
-      var hdr = pd.querySelector('header[data-testid="stHeader"]');
-      if (hdr) hdr.style.display = 'none';
-    }}
-
-    _uhaInjectNav();
-
-    // Watch for nav being removed from body and immediately re-inject
-    if (!pw._uhaNavObserver) {{
-      pw._uhaNavObserver = new MutationObserver(function(mutations) {{
-        for (var i = 0; i < mutations.length; i++) {{
-          if (mutations[i].removedNodes.length > 0) {{
-            if (!pd.getElementById('uha-topnav-root')) {{
-              _uhaInjectNav();
-              break;
-            }}
-          }}
-        }}
-      }});
-      pw._uhaNavObserver.observe(pd.body, {{ childList: true }});
-    }}
-
-    // Wire Alt+key keyboard shortcuts (register once)
     if (!pd._uhaKbWired) {{
       pd._uhaKbWired = true;
       var shortcuts = {_shortcut_js_map};
@@ -430,19 +407,14 @@ def render_top_nav(feat_registry: FeatureRegistry) -> None:
           var target = shortcuts[k];
           if (target.startsWith('__js__')) {{
             try {{ eval(target.slice(6)); }} catch(err) {{}}
-          }} else {{
-            window.parent.location.href = target;
-          }}
+          }} else {{ window.parent.location.href = target; }}
         }}
       }});
     }}
-  }} catch(e) {{ console.warn('UHA nav inject failed:', e); }}
+  }} catch(e) {{}}
 }})();
 </script>
 """, height=1, scrolling=False)
-
-    # Spacer so page content doesn't hide under the fixed bar
-    st.markdown('<div style="height:46px"></div>', unsafe_allow_html=True)
 
 # ────────────────────────────────────────────────────────────────────
 # SIDEBAR
@@ -547,16 +519,27 @@ def render_sidebar(db, registry, feat_registry: FeatureRegistry,
         nav_labels = {i["page_key"]: f"{i['icon']} {i['label']}" for i in all_nav}
 
         idx = nav_keys.index(cur) if cur in nav_keys else 0
-        chosen = st.radio(
+
+        # Always sync the radio to the current URL page.
+        # Per Streamlit docs, a pending user interaction (click) overrides
+        # a programmatic session-state assignment, so user clicks still work.
+        # The on_change callback handles the actual navigation so no
+        # post-render redirect check is needed.
+        st.session_state["sidebar_nav_radio"] = cur
+
+        def _on_nav_change():
+            dest = st.session_state.get("sidebar_nav_radio")
+            if dest and dest != get_current_page():
+                set_page(dest)
+
+        st.radio(
             "Navigate",
             options=nav_keys,
             format_func=lambda k: nav_labels.get(k, k),
             index=idx,
             key="sidebar_nav_radio",
+            on_change=_on_nav_change,
         )
-        if chosen != cur:
-            set_page(chosen)
-            st.rerun()
 
         st.markdown("---")
 
