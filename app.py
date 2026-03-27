@@ -210,6 +210,74 @@ def set_page(key: str) -> None:
 
 
 # ────────────────────────────────────────────────────────────────────
+# THEME SYSTEM  (F-018)
+# ────────────────────────────────────────────────────────────────────
+
+_THEMES = {
+    "dark": """
+        /* ── Backgrounds ── */
+        .stApp                                      { background-color: #0d1117 !important; }
+        section[data-testid="stSidebar"]            { background-color: #161b22 !important; }
+        section[data-testid="stSidebar"] > div      { background-color: #161b22 !important; }
+        div[data-testid="stDecoration"]             { display: none !important; }
+
+        /* ── Text ── */
+        .stApp, .stApp *                            { color: #e6edf3; }
+        p, li, label, span, div                     { color: #e6edf3 !important; }
+        .stCaption, small                           { color: #8b949e !important; }
+
+        /* ── Inputs / Selects ── */
+        div[data-baseweb="input"] > div,
+        div[data-baseweb="textarea"] > div          { background-color: #1c2333 !important; border-color: #30363d !important; color: #e6edf3 !important; }
+        div[data-baseweb="select"] > div            { background-color: #1c2333 !important; border-color: #30363d !important; color: #e6edf3 !important; }
+        div[data-baseweb="popover"] ul              { background-color: #1c2333 !important; border-color: #30363d !important; }
+        div[data-baseweb="popover"] li              { color: #e6edf3 !important; }
+        div[data-baseweb="popover"] li:hover        { background-color: #21262d !important; }
+
+        /* ── Buttons ── */
+        .stButton > button[kind="secondary"]        { background-color: #21262d !important; border-color: #30363d !important; color: #e6edf3 !important; }
+        .stButton > button[kind="secondary"]:hover  { background-color: #30363d !important; }
+
+        /* ── Metrics ── */
+        div[data-testid="stMetric"]                 { background-color: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 0.75rem 1rem; }
+        div[data-testid="stMetricValue"]            { color: #e6edf3 !important; }
+        div[data-testid="stMetricDelta"]            { color: #8b949e !important; }
+
+        /* ── DataFrames ── */
+        .dvn-scroller, iframe[title="st_aggrid"]    { background-color: #1c2333 !important; }
+        div[data-testid="stDataFrameResizable"]     { background-color: #1c2333 !important; border-color: #30363d !important; }
+        .stDataFrame th                             { background-color: #21262d !important; color: #8b949e !important; }
+        .stDataFrame td                             { background-color: #1c2333 !important; color: #e6edf3 !important; border-color: #30363d !important; }
+
+        /* ── Expanders ── */
+        details[data-testid="stExpander"]           { border-color: #30363d !important; background-color: #161b22 !important; }
+        details[data-testid="stExpander"] summary   { color: #e6edf3 !important; }
+
+        /* ── Tabs ── */
+        .stTabs [data-baseweb="tab-list"]           { background-color: #161b22 !important; border-color: #30363d !important; }
+        .stTabs [data-baseweb="tab"]                { color: #8b949e !important; background-color: transparent !important; }
+        .stTabs [aria-selected="true"]              { color: #e6edf3 !important; border-bottom-color: #e63946 !important; }
+        .stTabs [data-baseweb="tab-panel"]          { background-color: #0d1117 !important; }
+
+        /* ── Sidebar elements ── */
+        section[data-testid="stSidebar"] .stRadio label          { color: #e6edf3 !important; }
+        section[data-testid="stSidebar"] .stMarkdownContainer p  { color: #8b949e !important; }
+        section[data-testid="stSidebar"] hr                      { border-color: #30363d !important; }
+
+        /* ── Dividers ── */
+        hr { border-color: #30363d !important; }
+    """,
+    "light": "",   # Streamlit default — no overrides needed
+}
+
+def _inject_theme() -> None:
+    theme = st.session_state.get("app_theme", "dark")
+    css   = _THEMES.get(theme, "")
+    if css:
+        st.markdown(f"<style>{css}</style>", unsafe_allow_html=True)
+
+
+# ────────────────────────────────────────────────────────────────────
 # TOP NAV BAR
 # ────────────────────────────────────────────────────────────────────
 
@@ -476,7 +544,13 @@ def render_sidebar(db, registry, feat_registry: FeatureRegistry,
             st.session_state["_db_health_ts"] = _now
         _health_ok = st.session_state.get("_db_health_ok", True)
         _dot = "🟢" if _health_ok else "🔴"
-        st.caption(f"{_dot} {'Connected' if _health_ok else 'Connection error'}")
+        _theme_col1, _theme_col2 = st.columns([3, 2])
+        _theme_col1.caption(f"{_dot} {'Connected' if _health_ok else 'Connection error'}")
+        _cur_theme = st.session_state.get("app_theme", "dark")
+        _theme_label = "☀️ Light" if _cur_theme == "dark" else "🌙 Dark"
+        if _theme_col2.button(_theme_label, key="sb_theme_toggle", use_container_width=True):
+            st.session_state["app_theme"] = "light" if _cur_theme == "dark" else "dark"
+            st.rerun()
 
         # ── Database Switcher ─────────────────────────────────────────
         available = get_available_databases()
@@ -876,6 +950,9 @@ def main() -> None:
 
     # ── Version syncer ────────────────────────────────────────────────
     syncer = VersionSyncer(registry=registry, repo="trechurch/UHAIMS")
+
+    # ── Theme (F-018) — must precede nav so CSS vars are available ────
+    _inject_theme()
 
     # ── Top nav ───────────────────────────────────────────────────────
     render_top_nav(feat_registry)
