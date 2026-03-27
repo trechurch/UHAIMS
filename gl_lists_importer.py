@@ -292,42 +292,60 @@ def import_as_master(db, categories: List[Dict],
     # Pre-load existing keys for fast lookup
     existing = {i["key"] for i in db.get_all_items()}
     added, updated, skipped, errors = 0, 0, 0, []
-    processed = 0
 
+    # Separate items into: need-insert vs need-update
+    to_insert = []
+    to_update = []
     for cat in categories:
-        cat_label = cat.get("gl_name", "")
         for item in cat["items"]:
-            processed += 1
+            db_item = {k: v for k, v in item.items() if not k.startswith("_")}
             if cost_center:
-                item["cost_center"] = cost_center
-            try:
-                if item["key"] in existing:
-                    if skip_existing:
-                        skipped += 1
-                    else:
-                        db.update_item(
-                            item["key"],
-                            {"gl_code":   item["gl_code"],
-                             "gl_name":   item["gl_name"],
-                             "pack_type": item["pack_type"],
-                             "cost":      item["cost"],
-                             "gtin":      item.get("gtin", "")},
-                            changed_by=changed_by,
-                        )
-                        updated += 1
+                db_item["cost_center"] = cost_center
+            if db_item["key"] in existing:
+                if not skip_existing:
+                    to_update.append(db_item)
                 else:
-                    db_item = {k: v for k, v in item.items() if not k.startswith("_")}
-                    db.add_item(db_item, changed_by=changed_by)
-                    existing.add(item["key"])
-                    added += 1
-            except Exception as exc:
-                errors.append(f"{item.get('description','?')}: {exc}")
+                    skipped += 1
+            else:
+                to_insert.append(db_item)
 
-            if tracker:
-                tracker.update(
-                    processed,
-                    f"{cat_label} — added {added:,} · skipped {skipped:,}",
-                )
+    total_ops = len(to_insert) + len(to_update)
+    if tracker:
+        tracker.update(0, f"Queued {len(to_insert):,} inserts · {len(to_update):,} updates")
+
+    # ── Bulk insert (one transaction per 500 rows) ────────────────────────────
+    if to_insert:
+        result = db.bulk_add_items(to_insert, changed_by=changed_by, batch_size=500)
+        added   = result["added"]
+        skipped += result["skipped"]
+        if result["errors"]:
+            errors.append(f"Bulk insert errors: {result['errors']}")
+        if tracker:
+            tracker.update(
+                len(to_insert),
+                f"Inserts done — added {added:,} · skipped {skipped:,}",
+            )
+
+    # ── Individual updates (can't batch easily without losing field granularity)
+    done_ops = len(to_insert)
+    for db_item in to_update:
+        try:
+            db.update_item(
+                db_item["key"],
+                {"gl_code":   db_item["gl_code"],
+                 "gl_name":   db_item["gl_name"],
+                 "pack_type": db_item["pack_type"],
+                 "cost":      db_item["cost"],
+                 "gtin":      db_item.get("gtin", "")},
+                changed_by=changed_by,
+            )
+            updated += 1
+        except Exception as exc:
+            errors.append(f"{db_item.get('description','?')}: {exc}")
+        done_ops += 1
+        if tracker:
+            tracker.update(done_ops,
+                           f"Updating existing items — {updated} updated")
 
     if tracker:
         tracker.done(

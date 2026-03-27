@@ -375,6 +375,85 @@ class InventoryDatabase:
             print(f"Error adding item: {e}")
             return False
 
+    def bulk_add_items(self, items: list, changed_by: str = "import",
+                       batch_size: int = 500) -> Dict[str, int]:
+        """
+        Insert many items in one transaction per batch.
+        Uses execute_values for a single round-trip per batch of batch_size rows.
+        Skips items whose key already exists (ON CONFLICT DO NOTHING).
+        Writes a single summary history row per batch instead of one per item.
+
+        Returns {"added": int, "skipped": int, "errors": int}
+        """
+        from psycopg2.extras import execute_values
+        now = datetime.utcnow()
+
+        # Canonical column set — must match what items table accepts
+        _COLS = [
+            "key", "description", "pack_type", "cost", "per", "conv_ratio",
+            "yield", "gl_code", "gl_name", "vendor", "item_number", "gtin",
+            "cost_center", "quantity_on_hand", "record_status", "is_chargeable",
+            "status_tag", "user_notes", "created_date", "last_updated",
+        ]
+
+        def _row(item):
+            d = dict(item)
+            d.setdefault("created_date",     now)
+            d.setdefault("last_updated",     now)
+            d.setdefault("record_status",    "active")
+            d.setdefault("yield",            1.0)
+            d.setdefault("conv_ratio",       1.0)
+            d.setdefault("quantity_on_hand", 0.0)
+            d.setdefault("is_chargeable",    True)
+            d.setdefault("status_tag",       "Standard")
+            d.setdefault("user_notes",       "")
+            d.setdefault("vendor",           "")
+            d.setdefault("item_number",      "")
+            d.setdefault("gtin",             "")
+            d.setdefault("per",              "Case")
+            if self._cc and not d.get("cost_center"):
+                d["cost_center"] = self._cc
+            return tuple(d.get(c) for c in _COLS)
+
+        col_str = ", ".join(_COLS)
+        sql     = (
+            f"INSERT INTO items ({col_str}) VALUES %s "
+            "ON CONFLICT (key) DO NOTHING"
+        )
+
+        added = skipped = errors = 0
+        for start in range(0, len(items), batch_size):
+            batch = items[start : start + batch_size]
+            rows  = []
+            for item in batch:
+                try:
+                    rows.append(_row(item))
+                except Exception:
+                    errors += 1
+
+            if not rows:
+                continue
+            try:
+                with get_conn() as conn:
+                    cur = conn.cursor()
+                    execute_values(cur, sql, rows)
+                    added += cur.rowcount if cur.rowcount >= 0 else len(rows)
+                    skipped += len(rows) - max(cur.rowcount, 0)
+                # One summary history entry for the whole batch
+                self._add_history(
+                    batch[0].get("key", "bulk"),
+                    "bulk_import",
+                    "all",
+                    new_value=f"Bulk import: {len(rows)} items",
+                    change_source="import",
+                    changed_by=changed_by,
+                )
+            except Exception as exc:
+                errors += len(rows)
+                print(f"bulk_add_items batch error: {exc}")
+
+        return {"added": added, "skipped": skipped, "errors": errors}
+
     def upsert_item(self, item_data: Dict[str, Any],
                     doc_date: str = None,
                     source_document: str = None,
