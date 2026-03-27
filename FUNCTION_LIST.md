@@ -176,7 +176,7 @@ are context-unaware (no active-dashboard routing).
 - Show only icons (no labels) when narrow; full labels when wide
 - Store `sidebar_collapsed: bool` in session state
 
-### [ ] F-018 — UI Styling (theme selector)
+### [x] F-018 — UI Styling (theme selector)
 **Area:** App Management → UI Styling
 **Problem:** No theme switching exists beyond Streamlit's built-in light/dark.
 **Proposed Solution:**
