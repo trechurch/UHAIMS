@@ -11,6 +11,7 @@ import pandas as pd
 from datetime import datetime
 from base import Dashboard
 from utils import num_input, fmt_num
+from ui_helpers import render_empty_state
 
 try:
     import auth as _auth
@@ -80,11 +81,32 @@ class InventoryBrowser(Dashboard):
             st.session_state["ib_selected_keys"] = []
         if "ib_focus_key" not in st.session_state:
             st.session_state["ib_focus_key"] = None
+        if "ib_show_list" not in st.session_state:
+            st.session_state["ib_show_list"] = True
+        if "ib_recent_views" not in st.session_state:
+            st.session_state["ib_recent_views"] = []  # list of (key, label), max 10
+
+    @staticmethod
+    def _push_recent(key: str, label: str) -> None:
+        """Add an item to the recent-views list (deduped, newest first, max 10)."""
+        hist = st.session_state.get("ib_recent_views", [])
+        hist = [(k, l) for k, l in hist if k != key]   # remove existing entry
+        hist.insert(0, (key, label))
+        st.session_state["ib_recent_views"] = hist[:10]
 
     def sidebar(self) -> None:
         with st.sidebar:
             st.markdown("**🗃️ Inventory**")
             st.caption("Browse · Search · Edit")
+            recent = st.session_state.get("ib_recent_views", [])
+            if recent:
+                st.markdown("**Recently Viewed**")
+                for _key, _lbl in recent[:5]:
+                    if st.button(_lbl[:30], key=f"ib_rv_{_key}",
+                                 use_container_width=True):
+                        st.session_state["ib_focus_key"]     = _key
+                        st.session_state["ib_selected_keys"] = []
+                        st.rerun()
 
     # ── Render ────────────────────────────────────────────────────────────────
 
@@ -117,17 +139,36 @@ class InventoryBrowser(Dashboard):
         """, unsafe_allow_html=True)
 
         # ── Top filter bar (full width) ───────────────────────────────────────
-        fc1, fc2, fc3, fc4 = st.columns([3, 2, 2, 1])
+        show_list = st.session_state.get("ib_show_list", True)
+
+        # Search history chips
+        _search_hist = st.session_state.get("ib_search_history", [])
+        if _search_hist:
+            _chip_cols = st.columns([1] + [2] * len(_search_hist))
+            _chip_cols[0].caption("Recent:")
+            for _ci, _term in enumerate(_search_hist):
+                if _chip_cols[_ci + 1].button(_term, key=f"ib_chip_{_ci}",
+                                               use_container_width=True):
+                    st.session_state["ib_search"] = _term
+                    st.rerun()
+
+        fc1, fc2, fc3, fc4, fc5 = st.columns([3, 2, 2, 1, 1])
         search     = fc1.text_input("", placeholder="🔍  Search items, vendor, GL...",
                                     key="ib_search", label_visibility="collapsed")
         with st.spinner(""):
             if search and len(search) >= 2:
+                _hist = st.session_state.get("ib_search_history", [])
+                if search not in _hist:
+                    st.session_state["ib_search_history"] = ([search] + _hist)[:5]
                 items = self.db.search_items(search)
             else:
                 items = self.db.get_all_items("active")
 
         if not items:
-            st.info("No items found.")
+            render_empty_state(
+                "🔍", "No items found",
+                "Try adjusting your search or clearing the GL / vendor filter.",
+            )
             return
 
         gl_codes   = sorted({i.get("gl_code") or "" for i in items if i.get("gl_code")})
@@ -137,6 +178,11 @@ class InventoryBrowser(Dashboard):
         vnd_filter = fc3.selectbox("Vendor", ["All Vendors"] + vendors,
                                    key="ib_vnd", label_visibility="collapsed")
         show_disc  = fc4.checkbox("Disc.", key="ib_disc", help="Show discontinued")
+        if fc5.button("◀ List" if show_list else "▶ List",
+                      key="ib_toggle_list", use_container_width=True,
+                      help="Hide list to expand detail panel"):
+            st.session_state["ib_show_list"] = not show_list
+            st.rerun()
 
         if gl_filter  != "All GL":
             items = [i for i in items if i.get("gl_code") == gl_filter]
@@ -146,12 +192,13 @@ class InventoryBrowser(Dashboard):
             items = [i for i in items if i.get("record_status", "active") == "active"]
 
         # ── Split: left list (2/5) · right detail (3/5) ───────────────────────
-        left, right = st.columns([2, 3], gap="medium")
-
-        with left:
-            self._render_list(items)
-
-        with right:
+        if show_list:
+            left, right = st.columns([2, 3], gap="medium")
+            with left:
+                self._render_list(items)
+            with right:
+                self._render_detail_panel(items)
+        else:
             self._render_detail_panel(items)
 
     # ── LIST PANEL ────────────────────────────────────────────────────────────
@@ -238,11 +285,9 @@ class InventoryBrowser(Dashboard):
 
         # Nothing selected
         if not focus_key and not selected_keys:
-            st.markdown(
-                "<div style='color:#4A4E55; padding:80px 20px; text-align:center;"
-                "font-size:14px;'>← Click a row to view details<br/>"
-                "Check multiple rows to compare</div>",
-                unsafe_allow_html=True,
+            render_empty_state(
+                "←", "Select an item",
+                "Click any row to view details · check multiple rows to compare",
             )
             return
 
@@ -252,6 +297,8 @@ class InventoryBrowser(Dashboard):
             if not item:
                 st.error("Item not found.")
                 return
+            self._push_recent(focus_key,
+                              item.get("description") or focus_key.split("||")[0])
             self._render_single_item(item)
             return
 
@@ -266,7 +313,7 @@ class InventoryBrowser(Dashboard):
                 tab_items.append(item)
 
         if not tab_items:
-            st.info("Could not load selected items.")
+            render_empty_state("📭", "Items not found", "The selected items could not be loaded.")
             return
 
         tabs = st.tabs(tab_labels)
@@ -290,12 +337,24 @@ class InventoryBrowser(Dashboard):
             st.rerun()
 
         if h3.button("🗑️ Archive", key=f"ib_arch_{key}", use_container_width=True):
-            self.db.delete_item(key, changed_by=_get_changed_by())
-            st.session_state["ib_focus_key"] = None
-            st.session_state["ib_selected_keys"] = []
+            st.session_state["ib_confirm_delete"] = key
             st.rerun()
 
         st.caption(f"`{key}`")
+
+        if st.session_state.get("ib_confirm_delete") == key:
+            st.warning(f"Archive **{item.get('description', key)}**? This cannot be undone.")
+            _dc1, _dc2 = st.columns(2)
+            if _dc1.button("✅ Confirm Archive", key=f"ib_del_conf_{key}",
+                           type="primary", use_container_width=True):
+                self.db.delete_item(key, changed_by=_get_changed_by())
+                st.session_state["ib_focus_key"] = None
+                st.session_state["ib_selected_keys"] = []
+                st.session_state.pop("ib_confirm_delete", None)
+                st.rerun()
+            if _dc2.button("✕ Cancel", key=f"ib_del_cancel_{key}", use_container_width=True):
+                st.session_state.pop("ib_confirm_delete", None)
+                st.rerun()
         st.markdown("---")
 
         if edit_mode:
@@ -322,25 +381,35 @@ class InventoryBrowser(Dashboard):
         t1, t2, t3 = st.tabs(["📋 Details", "🔒 Overrides", "📜 History"])
 
         with t1:
+            def _lock(val) -> str:
+                return " 🔒" if val is not None and str(val).strip() != "" else ""
+
             detail_rows = [
-                ("Pack Type",    item.get("pack_type")    or "—"),
-                ("Per",          item.get("per")          or "—"),
-                ("Conv Ratio",   f"{conv:.4f}"),
-                ("Yield %",      f"{yld * 100:.1f}%"),
-                ("Vendor",       item.get("vendor")       or "—"),
-                ("Item #",       item.get("item_number")  or "—"),
-                ("MOG",          item.get("mog")          or "—"),
-                ("GL Code",      item.get("gl_code")      or "—"),
-                ("GL Name",      item.get("gl_name")      or "—"),
-                ("Cost Center",  item.get("cost_center")  or "—"),
+                ("Pack Type",    (item.get("pack_type")   or "—") + _lock(item.get("override_pack_type"))),
+                ("Per",          item.get("per")           or "—"),
+                ("Conv Ratio",   f"{conv:.4f}"             + _lock(item.get("override_conv_ratio"))),
+                ("Yield %",      f"{yld * 100:.1f}%"       + _lock(item.get("override_yield"))),
+                ("Vendor",       (item.get("vendor")       or "—") + _lock(item.get("override_vendor"))),
+                ("Item #",       item.get("item_number")   or "—"),
+                ("MOG",          item.get("mog")           or "—"),
+                ("GL Code",      (item.get("gl_code")      or "—") + _lock(item.get("override_gl"))),
+                ("GL Name",      item.get("gl_name")       or "—"),
+                ("Cost Center",  item.get("cost_center")   or "—"),
                 ("Chargeable",   "✅ Yes" if item.get("is_chargeable") else "❌ No"),
-                ("Status Tag",   item.get("status_tag")   or "—"),
+                ("Status Tag",   item.get("status_tag")    or "—"),
                 ("Last Updated", str(item.get("last_updated") or "—")[:19]),
             ]
             st.dataframe(
                 pd.DataFrame(detail_rows, columns=["Field", "Value"]),
                 use_container_width=True, hide_index=True,
             )
+            locked_count = sum(1 for f in [
+                item.get("override_pack_type"), item.get("override_conv_ratio"),
+                item.get("override_yield"), item.get("override_vendor"),
+                item.get("override_gl"),
+            ] if f is not None and str(f).strip() != "")
+            if locked_count:
+                st.caption(f"🔒 {locked_count} field(s) locked — see **Overrides** tab to manage")
 
         with t2:
             self._render_overrides(item)
@@ -450,33 +519,82 @@ class InventoryBrowser(Dashboard):
 
     def _render_overrides(self, item: dict) -> None:
         key = item["key"]
-        st.caption("Locked fields won't be overwritten by future imports.")
 
-        override_fields = {
-            "conv_ratio": ("Conv Ratio", item.get("override_conv_ratio")),
-            "yield":      ("Yield",      item.get("override_yield")),
-            "pack_type":  ("Pack Type",  item.get("override_pack_type")),
-            "vendor":     ("Vendor",     item.get("override_vendor")),
-            "gl":         ("GL Code",    item.get("override_gl")),
+        st.markdown("""
+        <style>
+        .ovr-locked {
+            display:inline-block; background:#78350f; color:#fef3c7;
+            border-radius:4px; padding:2px 10px; font-size:12px;
+            font-family:monospace; font-weight:700; letter-spacing:.02em;
         }
+        .ovr-free {
+            display:inline-block; color:#475569;
+            font-size:12px; font-family:monospace;
+        }
+        .ovr-live {
+            display:inline-block; color:#94a3b8; font-size:11px;
+        }
+        </style>
+        """, unsafe_allow_html=True)
 
-        for fk, (label, val) in override_fields.items():
-            oc1, oc2, oc3 = st.columns([2, 2, 1])
-            oc1.markdown(f"**{label}**")
-            if val:
-                oc2.markdown(f"🔒 `{val}`")
-                if oc3.button("Clear", key=f"clr_{fk}_{key}"):
-                    self.db.clear_override(key, fk,
-                                           changed_by=_get_changed_by())
+        st.caption(
+            "🔒 **Locked** fields keep their value through imports.  "
+            "🔓 **Unlocked** fields follow incoming data."
+        )
+        st.markdown("")
+
+        # field_key → (label, override_col_value, live_col_value)
+        FIELDS = [
+            ("conv_ratio", "Conv Ratio",
+             item.get("override_conv_ratio"), item.get("conv_ratio")),
+            ("yield",      "Yield",
+             item.get("override_yield"),      item.get("yield")),
+            ("pack_type",  "Pack Type",
+             item.get("override_pack_type"),  item.get("pack_type")),
+            ("vendor",     "Vendor",
+             item.get("override_vendor"),     item.get("vendor")),
+            ("gl",         "GL Code",
+             item.get("override_gl"),         item.get("gl_code")),
+        ]
+
+        for fk, label, locked_val, live_val in FIELDS:
+            is_locked = locked_val is not None and str(locked_val).strip() != ""
+            c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
+
+            c1.markdown(f"**{label}**")
+
+            if is_locked:
+                c2.markdown(
+                    f"<span class='ovr-locked'>🔒 {locked_val}</span>",
+                    unsafe_allow_html=True,
+                )
+                c3.markdown(
+                    f"<span class='ovr-live'>live: {live_val or '—'}</span>",
+                    unsafe_allow_html=True,
+                )
+                if c4.button("Unlock", key=f"clr_{fk}_{key}",
+                             use_container_width=True,
+                             help=f"Remove lock — {label} will follow future imports"):
+                    self.db.clear_override(key, fk, changed_by=_get_changed_by())
                     st.rerun()
             else:
-                nv = oc2.text_input("", key=f"ovr_{fk}_{key}",
-                                    label_visibility="collapsed",
-                                    placeholder=f"Set {label}…")
-                if oc3.button("Set", key=f"set_{fk}_{key}") and nv:
-                    self.db.set_override(key, fk, nv,
-                                         changed_by=_get_changed_by())
-                    st.rerun()
+                c2.markdown(
+                    f"<span class='ovr-free'>🔓 {live_val or '—'}</span>",
+                    unsafe_allow_html=True,
+                )
+                c3.markdown(
+                    "<span class='ovr-live'>follows imports</span>",
+                    unsafe_allow_html=True,
+                )
+                if c4.button("Lock", key=f"set_{fk}_{key}",
+                             use_container_width=True,
+                             help=f"Lock {label} to current value: {live_val}"):
+                    if live_val is not None:
+                        self.db.set_override(key, fk, str(live_val),
+                                             changed_by=_get_changed_by())
+                        st.rerun()
+                    else:
+                        st.caption(f"No current value to lock for {label}.")
 
     # ── HISTORY ───────────────────────────────────────────────────────────────
 

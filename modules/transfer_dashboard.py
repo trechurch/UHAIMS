@@ -116,9 +116,7 @@ class TransferDashboard(Dashboard):
         "usage": "Select From/To cost centers. Add line items from inventory. Verify balance. Submit.",
         "demo_ready": True,
         "notes": "v1.0.1: Full Compass cost center list. UHA cost centers shown first.",
-        "known_issues": [
-            "quantity_on_hand not yet updated on approve — pending cost_center per-item tracking.",
-        ],
+        "known_issues": [],
         "changelog": [
             {"version": "1.0.1", "date": "2026-03-19", "note": "Full Compass CC list."},
             {"version": "1.0.0", "date": "2026-03-19", "note": "Initial implementation."},
@@ -193,10 +191,12 @@ class TransferDashboard(Dashboard):
 
     def render(self) -> None:
         st.title("🔄 Transfer Sheet")
-        tab1, tab2 = st.tabs(["📝 New Transfer", "📋 History"])
+        tab1, tab2, tab3 = st.tabs(["📝 New Transfer", "📦 Incoming", "📋 History"])
         with tab1:
             self._render_new_transfer()
         with tab2:
+            self._render_incoming()
+        with tab3:
             self._render_history()
 
     # ── New Transfer ──────────────────────────────────────────────────────────
@@ -394,6 +394,143 @@ class TransferDashboard(Dashboard):
             st.error(f"Submit failed: {exc}")
             st.code(traceback.format_exc())
 
+    # ── Incoming Transfers (F-021) ────────────────────────────────────────────
+
+    def _render_incoming(self):
+        st.subheader("Incoming Transfers")
+        st.caption("Transfers submitted TO your cost center awaiting your acceptance.")
+
+        valid_ccs = list(COST_CENTERS.keys())
+        uha_default = next((i for i, k in enumerate(valid_ccs) if "57231" in k), 0)
+        my_cc_label = st.selectbox(
+            "My Cost Center (receiving)", valid_ccs,
+            index=uha_default, key="incoming_cc",
+        )
+        my_cc = COST_CENTERS[my_cc_label]
+
+        try:
+            from database import get_conn
+            with get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    SELECT * FROM transfers
+                    WHERE to_cc = %s AND status = 'submitted'
+                    ORDER BY transfer_date DESC, created_at DESC
+                """, (my_cc,))
+                cols = [d[0] for d in cur.description]
+                pending = [dict(zip(cols, r)) for r in cur.fetchall()]
+        except Exception as exc:
+            import traceback
+            st.error(f"Could not load incoming transfers: {exc}")
+            st.code(traceback.format_exc())
+            return
+
+        if not pending:
+            st.info("No pending incoming transfers for this cost center.")
+            return
+
+        st.markdown(f"**{len(pending)} transfer(s) awaiting acceptance**")
+        st.markdown("---")
+
+        for xfr in pending:
+            tid = xfr["transfer_id"]
+            with st.container():
+                h1, h2 = st.columns([4, 1])
+                h1.markdown(
+                    f"**{tid}** · {str(xfr['transfer_date'])[:10]}  \n"
+                    f"From: **{xfr['from_cc_name'] or xfr['from_cc']}** "
+                    f"· Sender: {xfr.get('from_manager') or '—'}  \n"
+                    f"Total: **${float(xfr['gl_total'] or 0):,.2f}**"
+                )
+
+                # Load lines
+                try:
+                    with get_conn() as conn:
+                        cur = conn.cursor()
+                        cur.execute(
+                            "SELECT * FROM transfer_lines WHERE transfer_id=%s ORDER BY line_id",
+                            (tid,)
+                        )
+                        lcols = [d[0] for d in cur.description]
+                        lrows = [dict(zip(lcols, r)) for r in cur.fetchall()]
+                except Exception:
+                    lrows = []
+
+                with st.expander(f"📋 {len(lrows)} line(s)", expanded=False):
+                    if lrows:
+                        st.dataframe(pd.DataFrame([{
+                            "Description": r["description"],
+                            "Pack":        r["pack_type"],
+                            "GL":          r["gl_code"],
+                            "Qty":         r["quantity"],
+                            "Unit Cost":   f"${float(r['unit_cost'] or 0):.4f}",
+                            "Total":       f"${float(r['total_value'] or 0):.2f}",
+                        } for r in lrows]), use_container_width=True, hide_index=True)
+
+                ac1, ac2 = st.columns(2)
+
+                if ac1.button("✅ Accept", key=f"inc_accept_{tid}", type="primary",
+                              use_container_width=True):
+                    try:
+                        changed_by = "web_user"
+                        try:
+                            import auth as _a
+                            changed_by = _a.get_changed_by()
+                        except Exception:
+                            pass
+                        with get_conn() as conn:
+                            conn.cursor().execute("""
+                                UPDATE transfers
+                                SET status='approved', approved_by=%s,
+                                    approved_at=NOW()
+                                WHERE transfer_id=%s
+                            """, (changed_by, tid))
+                        result = self.db.apply_transfer_qoh(tid, changed_by=changed_by)
+                        st.success(
+                            f"✅ Accepted — {result['applied']} item(s) received"
+                            + (f", {result['cloned']} added to your inventory" if result["cloned"] else "")
+                        )
+                        if result["warnings"]:
+                            for w in result["warnings"]:
+                                st.warning(f"⚠️ {w}")
+                        st.rerun()
+                    except Exception as exc:
+                        import traceback
+                        st.error(f"Accept failed: {exc}")
+                        st.code(traceback.format_exc())
+
+                with ac2:
+                    with st.popover("❌ Reject", use_container_width=True):
+                        reject_reason = st.text_input(
+                            "Reason (optional)", key=f"inc_reason_{tid}",
+                            placeholder="e.g. Items not received, wrong quantity…"
+                        )
+                        if st.button("Confirm Reject", key=f"inc_reject_{tid}",
+                                     type="primary"):
+                            try:
+                                changed_by = "web_user"
+                                try:
+                                    import auth as _a
+                                    changed_by = _a.get_changed_by()
+                                except Exception:
+                                    pass
+                                note = f"REJECTED by {changed_by}"
+                                if reject_reason:
+                                    note += f": {reject_reason}"
+                                with get_conn() as conn:
+                                    conn.cursor().execute("""
+                                        UPDATE transfers
+                                        SET status='rejected',
+                                            notes=COALESCE(notes||' | ','') || %s
+                                        WHERE transfer_id=%s
+                                    """, (note, tid))
+                                st.success(f"Transfer {tid} rejected.")
+                                st.rerun()
+                            except Exception as exc:
+                                st.error(f"Reject failed: {exc}")
+
+                st.divider()
+
     # ── History ───────────────────────────────────────────────────────────────
 
     def _render_history(self):
@@ -403,7 +540,7 @@ class TransferDashboard(Dashboard):
         filter_cc     = fc1.selectbox("Cost Center", ["All"] + valid_ccs,
                                        key="hist_cc")
         filter_status = fc2.selectbox("Status",
-                                       ["All","draft","submitted","approved"],
+                                       ["All","draft","submitted","approved","rejected"],
                                        key="hist_status")
         limit         = fc3.number_input("Show last N", value=20, min_value=1,
                                          step=1, format="%.0f", key="hist_limit")

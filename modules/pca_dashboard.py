@@ -10,13 +10,14 @@ import streamlit as st
 import pandas as pd
 from base import Dashboard
 from utils import num_input, fmt_currency
+from ui_helpers import render_empty_state
 
 class PCADashboard(Dashboard):
 
     MANIFEST = {
         "id":       "pca_dashboard",
         "label":    "PCA Tool",
-        "version":  "1.1.0",
+        "version":  "1.2.0",
         "icon":     "🧪",
         "status":   "active",
         "page_key": "pca",
@@ -33,7 +34,7 @@ class PCADashboard(Dashboard):
         },
         "depends_on":   ["database", "pca_engine"],
         "db_tables":    ["items", "recipes", "recipe_ingredients"],
-        "session_keys": ["pca_recipe_id"],
+        "session_keys": ["pca_open_recipes", "pca_creating"],
         "abilities": [
             "Create and manage PCA recipes",
             "Add food ingredients and disposables from inventory",
@@ -51,6 +52,7 @@ class PCADashboard(Dashboard):
         "notes": "v1.1.0: Full UI matching the Excel prototype. All calculated fields mirror prototype formulas.",
         "known_issues": [],
         "changelog": [
+            {"version": "1.2.0", "date": "2026-03-27", "note": "Multi-tab workspace — up to 5 recipes open simultaneously (F-005)."},
             {"version": "1.1.0", "date": "2026-03-19", "note": "Full prototype-matching UI."},
             {"version": "1.0.2", "date": "2026-03-19", "note": "Schema detection + rebuild."},
             {"version": "1.0.0", "date": "2026-03-18", "note": "Initial implementation."},
@@ -122,32 +124,55 @@ class PCADashboard(Dashboard):
 
         st.title("🧪 Portion Cost Analysis")
 
-        # ── Recipe selector ───────────────────────────────────────────────────
+        # ── Recipe management bar ─────────────────────────────────────────────
         recipes    = pca.get_all_recipes()
         recipe_map = {r["name"]: r["recipe_id"] for r in recipes}
+        id_to_name = {v: k for k, v in recipe_map.items()}
         names      = sorted(recipe_map.keys())
 
-        col_sel, col_new, col_dup, col_del = st.columns([4, 1, 1, 1])
-        with col_sel:
-            selected_name = st.selectbox(
-                "Recipe", ["— select or create new —"] + names,
-                key="pca_sel", label_visibility="collapsed"
-            )
+        open_ids: list = st.session_state.get("pca_open_recipes", [])
+
+        col_sel, col_open, col_new, col_dup, col_del = st.columns([4, 1, 1, 1, 1])
+        selected_name = col_sel.selectbox(
+            "Recipe", ["— select or create new —"] + names,
+            key="pca_sel", label_visibility="collapsed",
+        )
         selected_id = recipe_map.get(selected_name)
 
-        with col_new:
-            if st.button("➕ New", use_container_width=True):
-                self.set_state("pca_recipe_id", None)
-                st.session_state["pca_creating"] = True
-        with col_dup:
-            if selected_id and st.button("📋 Copy", use_container_width=True):
-                new_id = pca.duplicate_recipe(selected_id, new_name=f"{selected_name} (Copy)")
+        if col_open.button("↗ Open", use_container_width=True,
+                           help="Open in a workspace tab (max 5)",
+                           disabled=not selected_id):
+            if selected_id and selected_id not in open_ids:
+                if len(open_ids) < 5:
+                    open_ids = open_ids + [selected_id]
+                    st.session_state["pca_open_recipes"] = open_ids
+                    st.rerun()
+                else:
+                    st.warning("Maximum 5 tabs open — close one first.")
+
+        if col_new.button("➕ New", use_container_width=True):
+            st.session_state["pca_creating"] = True
+        if col_dup.button("📋 Copy", use_container_width=True, disabled=not selected_id):
+            if selected_id:
+                pca.duplicate_recipe(selected_id, new_name=f"{selected_name} (Copy)")
                 st.success("Duplicated.")
                 st.rerun()
-        with col_del:
-            if selected_id and st.button("🗑️ Archive", use_container_width=True):
+        if col_del.button("🗑️ Archive", use_container_width=True, disabled=not selected_id):
+            if selected_id:
+                st.session_state["pca_confirm_delete"] = selected_id
+                st.rerun()
+
+        if st.session_state.get("pca_confirm_delete") == selected_id and selected_id:
+            st.warning(f"Archive recipe **{selected_name}**? This cannot be undone.")
+            _pc1, _pc2 = st.columns(2)
+            if _pc1.button("✅ Confirm Archive", key="pca_del_conf",
+                           type="primary", use_container_width=True):
                 pca.delete_recipe(selected_id, soft=True)
-                st.success("Archived.")
+                st.session_state["pca_open_recipes"] = [i for i in open_ids if i != selected_id]
+                st.session_state.pop("pca_confirm_delete", None)
+                st.rerun()
+            if _pc2.button("✕ Cancel", key="pca_del_cancel", use_container_width=True):
+                st.session_state.pop("pca_confirm_delete", None)
                 st.rerun()
 
         # ── New recipe form ───────────────────────────────────────────────────
@@ -157,12 +182,13 @@ class PCADashboard(Dashboard):
                 c1, c2 = st.columns(2)
                 name     = c1.text_input("Menu Item Name *")
                 category = c2.selectbox("Category", ["Concessions", "Catering", "Premium", "Other"])
-                c3, c4, c5, c6 = st.columns(4)
                 price    = num_input("Selling Price $", value=0.0,  min_value=0.0, step=0.01)
                 goal_pct = num_input("Cost % Goal",    value=17.0, min_value=0.0, max_value=100.0, step=0.5)
                 servings = st.number_input("Servings/Portion", value=1, min_value=1, step=1, format="%.0f")
-                portions = st.number_input("Portions",          value=1, min_value=1, step=1, format="%.0f")
-                submitted = st.form_submit_button("Create Recipe", type="primary")
+                portions = st.number_input("Portions",         value=1, min_value=1, step=1, format="%.0f")
+                fc1, fc2 = st.columns(2)
+                submitted  = fc1.form_submit_button("Create Recipe", type="primary")
+                cancelled  = fc2.form_submit_button("Cancel")
             if submitted and name:
                 rid = pca.create_recipe(
                     name=name.strip(), category=category,
@@ -171,15 +197,67 @@ class PCADashboard(Dashboard):
                     updated_by="web_user",
                 )
                 if rid:
-                    st.success(f"✅ '{name}' created!")
+                    open_ids = open_ids + [rid]
+                    st.session_state["pca_open_recipes"] = open_ids
                     st.session_state["pca_creating"] = False
                     st.rerun()
+            if cancelled:
+                st.session_state["pca_creating"] = False
+                st.rerun()
             st.stop()
 
-        if not selected_id:
-            st.info("Select a recipe above or create a new one.")
+        # ── Workspace tabs ────────────────────────────────────────────────────
+        if not open_ids:
+            render_empty_state(
+                "🧪", "No recipe open",
+                "Select a recipe and click ↗ Open, or ➕ New to create one.",
+            )
             return
 
+        tab_labels = [
+            (id_to_name.get(rid) or f"Recipe {rid}")[:20]
+            + (" ✎" if st.session_state.get(f"pca_dirty_{rid}") else "")
+            for rid in open_ids
+        ]
+        tabs = st.tabs(tab_labels)
+        for tab, rid in zip(tabs, open_ids):
+            with tab:
+                close_col, warn_col, _ = st.columns([1, 4, 4])
+                _dirty = st.session_state.get(f"pca_dirty_{rid}", False)
+                _confirming_close = st.session_state.get(f"pca_close_confirm_{rid}", False)
+
+                if _confirming_close:
+                    warn_col.warning("Recipe was modified this session — close anyway?")
+                    _cc1, _cc2 = st.columns(2)
+                    if _cc1.button("✅ Close", key=f"pca_close_ok_{rid}",
+                                   type="primary", use_container_width=True):
+                        new_open = [i for i in open_ids if i != rid]
+                        st.session_state["pca_open_recipes"] = new_open
+                        st.session_state.pop(f"pca_dirty_{rid}", None)
+                        st.session_state.pop(f"pca_close_confirm_{rid}", None)
+                        st.rerun()
+                    if _cc2.button("✕ Cancel", key=f"pca_close_cancel_{rid}",
+                                   use_container_width=True):
+                        st.session_state.pop(f"pca_close_confirm_{rid}", None)
+                        st.rerun()
+                else:
+                    if close_col.button("✕ Close", key=f"pca_close_{rid}",
+                                        use_container_width=True):
+                        if _dirty:
+                            st.session_state[f"pca_close_confirm_{rid}"] = True
+                            st.rerun()
+                        else:
+                            new_open = [i for i in open_ids if i != rid]
+                            st.session_state["pca_open_recipes"] = new_open
+                            st.rerun()
+                    if _dirty:
+                        warn_col.info("✎ Modified this session — changes auto-saved to DB.")
+
+                self._render_recipe(pca, rid)
+
+    # ── Single recipe render ───────────────────────────────────────────────────
+
+    def _render_recipe(self, pca, selected_id: int) -> None:
         # ── Load recipe + calculate ───────────────────────────────────────────
         result = pca.calculate_pca(selected_id)
         if not result:
@@ -282,6 +360,7 @@ class PCADashboard(Dashboard):
                 to_remove = st.selectbox("Select line to remove", list(line_options.keys()), key="pca_remove_sel")
                 if st.button("Remove", key="pca_remove_btn"):
                     pca.remove_ingredient(line_options[to_remove])
+                    st.session_state[f"pca_dirty_{selected_id}"] = True
                     st.success("Removed.")
                     st.rerun()
 
@@ -310,12 +389,18 @@ class PCADashboard(Dashboard):
                     "environment variable to enable AI ingredient suggestions."
                 )
             else:
-                st.caption(
-                    "AI will review current ingredients and suggest lower-cost "
-                    "alternatives from your inventory."
-                )
                 ai_key = f"pca_ai_suggestions_{selected_id}"
-                if st.button("🤖 Generate Suggestions", key=f"pca_ai_btn_{selected_id}"):
+
+                # Check if a fresh cache exists so we can label the button
+                has_cache = False
+                try:
+                    has_cache = bool(self.db.get_cached_suggestions(selected_id))
+                except Exception:
+                    pass
+
+                btn_col, ref_col = st.columns([3, 1])
+                btn_label = "📋 Load Cached Suggestions" if has_cache else "🤖 Generate Suggestions"
+                if btn_col.button(btn_label, key=f"pca_ai_btn_{selected_id}"):
                     with st.spinner("Asking Claude for ingredient alternatives…"):
                         try:
                             suggestions = pca.generate_ai_suggestions(
@@ -327,12 +412,24 @@ class PCADashboard(Dashboard):
                             st.error(f"AI error: {exc}")
                             st.session_state[ai_key] = []
 
+                if has_cache and ref_col.button("🔄 Refresh", key=f"pca_ai_refresh_{selected_id}",
+                                                help="Discard cache and call Claude again"):
+                    try:
+                        self.db.save_suggestions(selected_id, [])  # clear cache
+                    except Exception:
+                        pass
+                    st.session_state.pop(ai_key, None)
+                    st.rerun()
+
                 suggestions = st.session_state.get(ai_key)
                 if suggestions is None:
-                    pass  # not yet run
+                    if has_cache:
+                        st.caption("💾 Cached suggestions available — click button to load.")
                 elif not suggestions:
                     st.info("No suggestions returned — recipe may already be well-optimised.")
                 else:
+                    if suggestions and suggestions[0].get("_from_cache"):
+                        st.caption("💾 Showing cached suggestions (< 7 days old) — click 🔄 Refresh to regenerate.")
                     # Build line_id lookup: description → line_id
                     line_id_map = {
                         (l.get("description") or l.get("item_key", "")): l["line_id"]
@@ -384,6 +481,15 @@ class PCADashboard(Dashboard):
                                 {"item_key": chosen["alternate_item_key"]},
                             )
                             if ok:
+                                st.session_state[f"pca_dirty_{selected_id}"] = True
+                                try:
+                                    self.db.mark_suggestion_accepted(
+                                        selected_id,
+                                        chosen.get("ingredient_to_replace", ""),
+                                        chosen["alternate_item_key"],
+                                    )
+                                except Exception:
+                                    pass
                                 st.success(
                                     f"Swapped to {chosen['alternate_item_description']}."
                                 )
@@ -465,6 +571,7 @@ class PCADashboard(Dashboard):
                 ingredient_type=ing_type,
             )
             if lid:
+                st.session_state[f"pca_dirty_{recipe_id}"] = True
                 st.success(f"✅ Added {item['description']}")
                 st.rerun()
 

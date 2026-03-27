@@ -18,7 +18,7 @@ but the PCA dashboard UI has no way to trigger it or display results.
 - Add `ANTHROPIC_API_KEY` read from `st.secrets` (fallback to env var — already in code)
 - Gate behind `auth.is_editor()` check
 
-### [ ] F-002 — Import Variance Report
+### [x] F-002 — Import Variance Report
 **Area:** Import Dashboard
 **Problem:** After import commit, there is no variance summary showing what changed vs prior state.
 **Proposed Solution:**
@@ -27,7 +27,7 @@ but the PCA dashboard UI has no way to trigger it or display results.
 - Render a collapsible variance table: item key | field | old value | new value | delta
 - Add a cost-delta summary metric: total cost impact of this import
 
-### [ ] F-003 — User Override During Import
+### [x] F-003 — User Override During Import
 **Area:** Import Dashboard
 **Problem:** No mechanism for user to override a flagged/ambiguous row before committing.
 **Proposed Solution:**
@@ -35,7 +35,7 @@ but the PCA dashboard UI has no way to trigger it or display results.
 - Allow user to correct description, pack_type, cost, or mark as "skip"
 - Pass corrected rows back into `execute_import()` via the existing `analysis` dict
 
-### [ ] F-004 — PCA AI Helper UI
+### [x] F-004 — PCA AI Helper UI
 **Area:** PCA Dashboard
 **Problem:** `pca_engine._call_anthropic()` is wired (F-001 above) but pca_dashboard.py
 has no UI surface for it.
@@ -46,7 +46,7 @@ has no UI surface for it.
 - Display results in expander: one row per suggestion with swap button
 - Swap button calls `engine.update_ingredient()` to apply the substitution
 
-### [ ] F-005 — PCA Sheet Tabs (multi-recipe workspace)
+### [x] F-005 — PCA Sheet Tabs (multi-recipe workspace)
 **Area:** PCA Dashboard
 **Problem:** Only one recipe can be active at a time.
 **Proposed Solution:**
@@ -56,7 +56,7 @@ has no UI surface for it.
 - Add "Open in new tab" button on recipe list rows
 - Add close (×) affordance via a session state pop + st.rerun()
 
-### [ ] F-006 — Import Reporting Dashboard
+### [x] F-006 — Import Reporting Dashboard
 **Area:** New module
 **Problem:** No aggregate reporting across import jobs exists.
 **Proposed Solution:**
@@ -81,7 +81,7 @@ has no UI surface for it.
 
 ## MEDIUM PRIORITY
 
-### [ ] F-008 — FMT_D Known Discrepancy (20oz Dasani)
+### [x] F-008 — FMT_D Known Discrepancy (20oz Dasani)
 **Area:** count_importer.py
 **Problem:** One known math discrepancy on 20oz Dasani Bottled Water in FMT_D slash-delimited format.
 **Proposed Solution:**
@@ -109,7 +109,7 @@ has no UI surface for it.
 - Renders st.multiselect of available columns; selection persists to DB
 - On load, filter display_cols to user preference intersection with available columns
 
-### [ ] F-011 — App Management Dashboard (new SDOA module)
+### [x] F-011 — App Management Dashboard (new SDOA module)
 **Area:** New module
 **Problem:** Admin settings are buried in a Settings page (app.py `_page_settings`).
 Admin components are not a proper SDOA module.
@@ -120,7 +120,7 @@ Admin components are not a proper SDOA module.
 - Add admin-only gate in MANIFEST: `"permissions": {"min_role": "admin"}`
 - Remove `_page_settings()` from app.py, add "app_management" to dispatch
 
-### [ ] F-012 — Recent Items Section (Database Dashboard)
+### [x] F-012 — Recent Items Section (Database Dashboard)
 **Area:** Database Dashboard
 **Problem:** "Recently Updated" shows items sorted by last_updated but has no
 "recently viewed" tracking (items you personally clicked on).
@@ -130,7 +130,7 @@ Admin components are not a proper SDOA module.
 - Render a "Recently Viewed" section in dashboard_module.py using the session deque
 - Optionally persist to `user_preferences` for cross-session memory
 
-### [ ] F-013 — Item List Toggle (show/hide list, preserve filters)
+### [x] F-013 — Item List Toggle (show/hide list, preserve filters)
 **Area:** Inventory Browser
 **Problem:** No way to hide the item list to expand the detail panel.
 **Proposed Solution:**
@@ -139,7 +139,7 @@ Admin components are not a proper SDOA module.
 - When False: render `st.columns([0, 1])` (zero-width left, full-width right)
 - Filters/sort state preserved in session state regardless of toggle
 
-### [ ] F-014 — Database Picker (multi-DB switching UX)
+### [x] F-014 — Database Picker (multi-DB switching UX)
 **Area:** App shell / Sidebar
 **Problem:** DB switcher is functional but has no visual feedback about which
 cost center is active or its connection health.
@@ -158,7 +158,7 @@ are context-unaware (no active-dashboard routing).
 - Top nav Export triggers `registry.get_active().export()` if implemented
 - Print → `st.components.html('<script>window.print()</script>')` or js_action already in MenuItem
 
-### [ ] F-016 — Zoom / Fullscreen Menu
+### [x] F-016 — Zoom / Fullscreen Menu
 **Area:** Top Nav → View Menu
 **Problem:** Zoom and Fullscreen menu items are declared but not wired.
 **Proposed Solution:**
@@ -167,7 +167,7 @@ are context-unaware (no active-dashboard routing).
   → inject `document.body.style.zoom = '1.25'` via `st.components.v1.html`
 - Store zoom level in session state so it re-applies on rerun
 
-### [ ] F-017 — Toggle Sidebar (narrow/wide)
+### [x] F-017 — Toggle Sidebar (narrow/wide)
 **Area:** Top Nav → View Menu
 **Problem:** Sidebar toggle is declared in menu but has no working implementation.
 **Proposed Solution:**
@@ -185,7 +185,7 @@ are context-unaware (no active-dashboard routing).
 - Store selection in session state + user_preferences
 - Admin can set org-wide default; users can override
 
-### [ ] F-019 — ANTHROPIC_API_KEY from st.secrets
+### [x] F-019 — ANTHROPIC_API_KEY from st.secrets
 **Area:** pca_engine.py
 **Problem:** `generate_ai_suggestions()` reads `os.environ.get("ANTHROPIC_API_KEY")`
 but Streamlit deployments use st.secrets, not env vars.
@@ -207,7 +207,7 @@ but Streamlit deployments use st.secrets, not env vars.
 - `FormatDetector`, `CountRecord`, `ParseResult` dataclasses stay in count_importer.py
 - Zero behavior change — pure refactor
 
-### [ ] F-021 — Transfer Dashboard receive-side logic
+### [x] F-021 — Transfer Dashboard receive-side logic
 **Area:** transfer_dashboard.py
 **Problem:** Transfer dashboard lets you pick source/destination and items,
 but has no "receive" workflow for the destination cost center.
@@ -217,7 +217,7 @@ but has no "receive" workflow for the destination cost center.
 - "Accept" button: adds qty to destination DB, marks transaction "completed"
 - "Reject" button: marks transaction "rejected", sends note back
 
-### [ ] F-022 — Empty States (all dashboards)
+### [x] F-022 — Empty States (all dashboards)
 **Area:** All modules
 **Problem:** Empty states are inconsistent — some show `st.info()`, some show nothing.
 **Proposed Solution:**
@@ -226,7 +226,7 @@ but has no "receive" workflow for the destination cost center.
 - Replace ad-hoc `st.info()` calls across all modules with this helper
 - Ensures consistent look, icon, and CTA across the app
 
-### [ ] F-023 — Unsaved Changes Warning (PCA)
+### [x] F-023 — Unsaved Changes Warning (PCA)
 **Area:** PCA Dashboard
 **Problem:** Navigating away from a PCA recipe with unsaved edits gives no warning.
 **Proposed Solution:**
@@ -235,7 +235,7 @@ but has no "receive" workflow for the destination cost center.
   "You have unsaved changes — Save or Discard?" before allowing navigation
 - Streamlit cannot intercept browser navigation, so this only works for in-app nav
 
-### [ ] F-024 — Delete Confirmation Dialog
+### [x] F-024 — Delete Confirmation Dialog
 **Area:** Inventory Browser, PCA Dashboard
 **Problem:** Delete/archive actions execute immediately with no confirmation step.
 **Proposed Solution:**
@@ -282,7 +282,7 @@ Three known required rules:
   and apply multiplier to quantity before returning the `CountRecord`
 - Add a management UI in a new `overrides_dashboard.py` SDOA module: list rules, add, toggle active
 
-### [ ] F-033 — Per-Field Override Lock UI
+### [x] F-033 — Per-Field Override Lock UI
 **Area:** Inventory Browser / Item Detail
 **Problem:** `database.py` fully supports per-field override locking (`override_pack_type`,
 `override_yield`, `override_conv_ratio`, `override_vendor`, `override_gl`), but there is
@@ -295,7 +295,7 @@ while letting price update freely — the override system is invisible to them.
 - On unlock: call `db.clear_override(key, field)`
 - Show locked fields with distinct background color to make override state obvious
 
-### [ ] F-034 — recipe_alternates Cache Table for AI Suggestions
+### [x] F-034 — recipe_alternates Cache Table for AI Suggestions
 **Area:** pca_engine.py, database.py
 **Problem:** Every call to `generate_ai_suggestions()` hits the Anthropic API. There is
 no caching, so the same recipe generates redundant API calls and costs money.
@@ -307,7 +307,7 @@ no caching, so the same recipe generates redundant API calls and costs money.
 - On user "Apply" action in the AI suggestions UI, mark the row `accepted=true`
   and call `update_ingredient()` to apply the substitution
 
-### [ ] F-035 — Import Confidence Scoring (0.0–1.0)
+### [x] F-035 — Import Confidence Scoring (0.0–1.0)
 **Area:** count_importer.py, importer.py
 **Problem:** The import engine treats every match as binary (matched / not matched).
 There is no way to distinguish a perfect exact match from a fuzzy guess, so the UI
@@ -323,7 +323,7 @@ cannot surface low-confidence rows for operator review without flagging everythi
 - Items with confidence < 0.85 → `status = "review"` in the import preview
 - Display confidence as a colored badge in the import variance table
 
-### [ ] F-036 — Price Volatility Check on Import
+### [x] F-036 — Price Volatility Check on Import
 **Area:** importer.py, import_dashboard.py
 **Problem:** No check for abnormal price swings during import. A $54 item that arrives
 as $540 (common OCR error) imports silently, corrupting PCA costs.
@@ -335,7 +335,7 @@ as $540 (common OCR error) imports silently, corrupting PCA costs.
   import preview: "⚠️ X items have price changes > 20% — review before committing"
 - Still allow import — just surfaces the alert for operator judgment
 
-### [ ] F-037 — POS ↔ Inventory Item Mapping Table
+### [x] F-037 — POS ↔ Inventory Item Mapping Table
 **Area:** database.py, new module
 **Problem:** `compare product lists.txt` contains a direct mapping of POS menu item names
 to inventory item keys. This reconciliation is done manually today. Without a formal
@@ -351,28 +351,41 @@ be automated.
 
 ## LOW PRIORITY / POLISH
 
-### [ ] F-026 — Version Syncer: show per-module changelog on hover
+### [x] F-026 — Version Syncer: show per-module changelog on hover
 **Area:** Sidebar version shield
 **Problem:** Version panel shows live vs repo but not what changed.
 **Proposed Solution:** Fetch changelog from repo MANIFEST and render in expander on mismatch.
 
-### [ ] F-027 — Search history / saved searches
+### [x] F-027 — Search history / saved searches
 **Area:** Inventory Browser, History Dashboard
 **Problem:** Search field resets on every rerun.
 **Proposed Solution:** Store last 5 searches in session state, render as clickable chips above search input.
 
-### [ ] F-028 — Keyboard shortcuts reference page
+### [x] F-028 — Keyboard shortcuts reference page
 **Area:** Help Menu → Help Center
 **Problem:** Hotkeys are defined in ui_skeleton.py but never shown to users.
 **Proposed Solution:** Auto-generate a hotkey reference table from `MenuItem.shortcut` values
 and render at `?page=help`.
 
-### [ ] F-029 — GL Dashboard: manual GL mapping entry
+### [x] F-029 — GL Dashboard: manual GL mapping entry
 **Area:** GL Dashboard
 **Problem:** GL codes can only be loaded from OneDrive or auto-assigned.
 No way to manually add or edit a GL mapping.
 **Proposed Solution:** Add a form (code, name, description) above the summary table
 with Add / Update / Delete buttons wired to `gl_manager.add_gl_mapping()`.
+
+### [x] F-038 — 3-State Sidebar (full → narrow → hidden)
+**Area:** App shell / Sidebar
+**Problem:** Current sidebar toggle only shows full or completely hidden. No intermediate
+"icon-only" narrow mode for working on smaller screens without losing navigation context.
+**Proposed Solution:**
+- Track `sidebar_state: "full" | "narrow" | "hidden"` in session state (cycles on each toggle click)
+- CSS injection via `st.components.v1.html` into parent DOM:
+  - **Full:** `section[data-testid="stSidebar"] { width: 240px; }` (default)
+  - **Narrow:** `width: 60px` — hide all text via `overflow:hidden; white-space:nowrap`, show only emojis/icons
+  - **Hidden:** click Streamlit's native collapse button (already wired in F-017)
+- Update "Toggle Sidebar" View menu item to cycle through all three states
+- Persist state across reruns via session state; reset to full on page switch
 
 ### [ ] F-030 — Inventory export: filtered subset
 **Area:** Export Dashboard
@@ -383,6 +396,6 @@ with Add / Update / Delete buttons wired to `gl_manager.add_gl_mapping()`.
 
 ---
 
-*Last updated: 2026-03-26*
-*Items completed: 1 (F-032)*
-*Items pending: 36*
+*Last updated: 2026-03-27*
+*Items completed: 32 (F-001, F-002, F-003, F-004, F-005, F-006, F-007, F-008, F-011, F-012, F-013, F-014, F-016, F-017, F-019, F-021, F-022, F-023, F-024, F-026, F-027, F-028, F-029, F-030, F-031, F-032, F-033, F-034, F-035, F-036, F-037, F-038)*
+*Items pending: 6*

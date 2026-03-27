@@ -167,6 +167,9 @@ class CountRecord:
     override_multiplier: float = 1.0
     override_applied:    bool  = False
 
+    # Match confidence (F-035) — 0.0–1.0; set after DB lookup
+    confidence:          float = 1.0
+
 
 @dataclass
 class DetectionResult:
@@ -1024,12 +1027,19 @@ class ParserD(_CateringBase):
             # Total price is for whichever side had counts
             # Allocate: if case count > 0, tot_case = cnt_case * pr_case
             tot_case = round(cnt_case * pr_case, 2) if cnt_case > 0 else 0.0
-            tot_each = round(cnt_each * pr_each, 2) if cnt_each > 0 else 0.0
-            # Verify against file total
-            calc_total = round(tot_case + tot_each, 2)
+            # FMT_D: case and each counts represent the same physical items in
+            # different units (e.g. "2.00 Case / 48.00 EA" means 2 cases = 48 bottles).
+            # The file's Total Price is case-based when cases are present.
+            # Suppress the each-side total to prevent double-counting.
+            if cnt_case > 0:
+                tot_each   = 0.0
+                calc_total = tot_case
+            else:
+                tot_each   = round(cnt_each * pr_each, 2) if cnt_each > 0 else 0.0
+                calc_total = tot_each
             if tot_val > 0 and abs(calc_total - tot_val) > 0.02:
                 math_errors.append(
-                    f"'{desc}': reconstructed ${calc_total} ≠ file ${tot_val}"
+                    f"'{desc}': reconstructed ${calc_total:.2f} ≠ file ${tot_val:.2f}"
                 )
 
             records.append(self._make_record(
@@ -1158,6 +1168,11 @@ def commit_count(records: List[CountRecord], db, count_date: str,
             db_item  = db.get_item(r.item_key)
             prev_qty = float(db_item['quantity_on_hand']) if db_item else 0.0
             new_qty  = r.count_qty_each
+            # F-035: set per-record confidence based on DB match + parse verification
+            if db_item:
+                r.confidence = 1.0 if r.verified else 0.75
+            else:
+                r.confidence = 0.55 if r.verified else 0.35
 
             if db_item:
                 ok = db.update_quantity_from_count(
@@ -1326,6 +1341,10 @@ def render_count_import_page(db, get_changed_by_fn):
         'Each $':      f"${r.price_each:.2f}",
         'Total $':     f"${r.total_price:.2f}",
         '✓':           '✅' if r.verified else '⚠️',
+        'Conf':        (
+            '🟢' if r.confidence >= 0.90 else
+            '🟡' if r.confidence >= 0.70 else '🔴'
+        ),
     } for r in view])
 
     st.caption(f"{len(detail_df)} items")

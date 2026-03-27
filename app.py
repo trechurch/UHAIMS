@@ -292,6 +292,17 @@ button[data-testid="collapsedControl"] {
 .uha-nav-item:hover { background: #0f3460; color: #ffffff; text-decoration: none !important; }
 .uha-nav-item.uha-active { color: #e63946; font-weight: 600; }
 .uha-nav-sep { border: none; border-top: 1px solid #2d3748; margin: 4px 8px; }
+.uha-nav-shortcut {
+    float: right;
+    font-size: 10px;
+    color: #4a5568;
+    background: #1a2035;
+    border: 1px solid #2d3748;
+    border-radius: 3px;
+    padding: 1px 4px;
+    margin-left: 12px;
+    font-family: monospace;
+}
 </style>
 """
 
@@ -351,29 +362,80 @@ def render_top_nav(feat_registry: FeatureRegistry) -> None:
     _css_js  = _css_text.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
     _nav_js  = nav_inner.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
 
+    # Build Alt+key → URL map for keyboard shortcut listener
+    _shortcut_map = {}
+    for _m in menu_bar.menus:
+        for _c in _m.children:
+            if _c.shortcut and _c.page_key:
+                _shortcut_map[_c.shortcut.upper()] = f"?page={_c.page_key}"
+            elif _c.shortcut and _c.js_action:
+                _shortcut_map[_c.shortcut.upper()] = f"__js__{_c.js_action}"
+    _shortcut_js_map = str(_shortcut_map).replace("'", '"')
+
     # Inject nav + CSS directly into parent document body via components iframe.
     # st.components.v1.html() runs in a same-origin iframe; window.parent gives
     # access to the real page DOM, so position:fixed pins to the actual viewport.
+    # A MutationObserver on document.body re-injects the nav if React wipes it.
     import streamlit.components.v1 as _cv1
     _cv1.html(f"""
 <script>
 (function() {{
   try {{
     var pd = window.parent.document;
+    var pw = window.parent;
 
-    // Inject CSS into <head>
-    var s = pd.getElementById('uha-nav-css');
-    if (!s) {{ s = pd.createElement('style'); s.id = 'uha-nav-css'; pd.head.appendChild(s); }}
-    s.textContent = `{_css_js}`;
+    // Store latest nav/css in parent window so observer can re-use them
+    pw._uhaNavHtml = `{_nav_js}`;
+    pw._uhaCssHtml = `{_css_js}`;
 
-    // Inject nav div into <body>
-    var n = pd.getElementById('uha-topnav-root');
-    if (!n) {{ n = pd.createElement('div'); n.id = 'uha-topnav-root'; pd.body.appendChild(n); }}
-    n.innerHTML = `{_nav_js}`;
+    function _uhaInjectNav() {{
+      var s = pd.getElementById('uha-nav-css');
+      if (!s) {{ s = pd.createElement('style'); s.id = 'uha-nav-css'; pd.head.appendChild(s); }}
+      s.textContent = pw._uhaCssHtml;
 
-    // Hide Streamlit's built-in header so it doesn't overlap
-    var hdr = pd.querySelector('header[data-testid="stHeader"]');
-    if (hdr) hdr.style.display = 'none';
+      var n = pd.getElementById('uha-topnav-root');
+      if (!n) {{ n = pd.createElement('div'); n.id = 'uha-topnav-root'; pd.body.appendChild(n); }}
+      n.innerHTML = pw._uhaNavHtml;
+
+      var hdr = pd.querySelector('header[data-testid="stHeader"]');
+      if (hdr) hdr.style.display = 'none';
+    }}
+
+    _uhaInjectNav();
+
+    // Watch for nav being removed from body and immediately re-inject
+    if (!pw._uhaNavObserver) {{
+      pw._uhaNavObserver = new MutationObserver(function(mutations) {{
+        for (var i = 0; i < mutations.length; i++) {{
+          if (mutations[i].removedNodes.length > 0) {{
+            if (!pd.getElementById('uha-topnav-root')) {{
+              _uhaInjectNav();
+              break;
+            }}
+          }}
+        }}
+      }});
+      pw._uhaNavObserver.observe(pd.body, {{ childList: true }});
+    }}
+
+    // Wire Alt+key keyboard shortcuts (register once)
+    if (!pd._uhaKbWired) {{
+      pd._uhaKbWired = true;
+      var shortcuts = {_shortcut_js_map};
+      pd.addEventListener('keydown', function(e) {{
+        if (!e.altKey || e.ctrlKey || e.metaKey) return;
+        var k = e.key.toUpperCase();
+        if (shortcuts[k]) {{
+          e.preventDefault();
+          var target = shortcuts[k];
+          if (target.startsWith('__js__')) {{
+            try {{ eval(target.slice(6)); }} catch(err) {{}}
+          }} else {{
+            window.parent.location.href = target;
+          }}
+        }}
+      }});
+    }}
   }} catch(e) {{ console.warn('UHA nav inject failed:', e); }}
 }})();
 </script>
@@ -386,8 +448,39 @@ def render_top_nav(feat_registry: FeatureRegistry) -> None:
 # SIDEBAR
 # ────────────────────────────────────────────────────────────────────
 
+def _inject_sidebar_state(state: str) -> None:
+    """Inject CSS/JS into parent DOM for sidebar narrow/hidden states."""
+    import streamlit.components.v1 as _cv1
+    if state == "narrow":
+        _cv1.html("""<script>
+(function(){try{
+  var pd=window.parent.document;
+  var s=pd.getElementById('uha-sb-state-css');
+  if(!s){s=pd.createElement('style');s.id='uha-sb-state-css';pd.head.appendChild(s);}
+  s.textContent='section[data-testid="stSidebar"]{width:70px!important;min-width:70px!important;}'
+               +'section[data-testid="stSidebar"]>div:first-child{width:70px!important;overflow:hidden;}';
+}catch(e){}})()</script>""", height=0, scrolling=False)
+    elif state == "hidden":
+        _cv1.html("""<script>
+(function(){try{
+  var pd=window.parent.document;
+  var s=pd.getElementById('uha-sb-state-css');
+  if(s)s.remove();
+  var btn=pd.querySelector('[data-testid="collapsedControl"]')
+        ||pd.querySelector('[title="Close sidebar"]');
+  if(btn&&pd.querySelector('section[data-testid="stSidebar"]')){btn.click();}
+}catch(e){}})()</script>""", height=0, scrolling=False)
+    else:  # full — clear any injected narrow CSS
+        _cv1.html("""<script>
+(function(){try{
+  var s=window.parent.document.getElementById('uha-sb-state-css');
+  if(s)s.remove();
+}catch(e){}})()</script>""", height=0, scrolling=False)
+
+
 def render_sidebar(db, registry, feat_registry: FeatureRegistry,
                    syncer: VersionSyncer) -> None:
+    _inject_sidebar_state(st.session_state.get("sidebar_state", "full"))
     with st.sidebar:
         # ── Cost Center branding (based on current database) ─────────
         current_db = get_current_database()
@@ -397,6 +490,21 @@ def render_sidebar(db, registry, feat_registry: FeatureRegistry,
         st.markdown(f"**{cc_meta['label']}**")
         st.caption(cc_meta['caption'])
         st.markdown("---")
+
+        # ── Connection health ping (cached 60s) ───────────────────────
+        import time as _time
+        _now = _time.time()
+        _last_ts = st.session_state.get("_db_health_ts", 0)
+        if _now - _last_ts > 60:
+            try:
+                db.count_items()
+                st.session_state["_db_health_ok"] = True
+            except Exception:
+                st.session_state["_db_health_ok"] = False
+            st.session_state["_db_health_ts"] = _now
+        _health_ok = st.session_state.get("_db_health_ok", True)
+        _dot = "🟢" if _health_ok else "🔴"
+        st.caption(f"{_dot} {'Connected' if _health_ok else 'Connection error'}")
 
         # ── Database Switcher ─────────────────────────────────────────
         available = get_available_databases()
@@ -468,6 +576,18 @@ def render_sidebar(db, registry, feat_registry: FeatureRegistry,
                 if st.button("🔄 Hot Reload", key="syncer_hot_reload_sb",
                              use_container_width=True):
                     VersionSyncer.hot_reload()
+                # Changelog pop-overs per drifted component (F-026)
+                for _r in out_of_sync:
+                    with st.popover(f"📋 {_r.name}", use_container_width=True):
+                        st.caption(f"`{_r.live}` → `{_r.repo}`")
+                        _entries = syncer._fetch_changelog(_r.filepath)
+                        if _entries:
+                            for _e in _entries[:5]:
+                                _v = _e.get("version", "")
+                                _marker = "🆕 " if _v == _r.repo else "· "
+                                st.caption(f"{_marker}**{_v}** — {_e.get('note','')}")
+                        else:
+                            st.caption("No changelog available.")
             else:
                 st.caption("✅ All in sync")
                 if st.button("🔄 Force Reload", key="syncer_force_sb",
@@ -628,6 +748,56 @@ def _render_version_panel(registry) -> None:
 
 
 # ────────────────────────────────────────────────────────────────────
+# HELP PAGE  (keyboard shortcuts reference)
+# ────────────────────────────────────────────────────────────────────
+
+def _page_help(registry) -> None:
+    import pandas as pd
+    st.title("⌨️ Keyboard Shortcuts")
+    st.caption("All shortcuts use **Alt + key** and work anywhere in the app.")
+
+    # Navigation shortcuts from registered modules (via MANIFEST shortcut field)
+    nav_rows = []
+    feat_reg = get_feature_registry()
+    mb = MenuBar(feat_reg)
+    seen = set()
+    for m in mb.menus:
+        for item in m.children:
+            if item.shortcut and item.shortcut not in seen:
+                seen.add(item.shortcut)
+                dest = item.label
+                if item.page_key:
+                    dest = item.label
+                nav_rows.append({
+                    "Shortcut": f"Alt + {item.shortcut.upper()}",
+                    "Action":   dest,
+                    "Category": m.label,
+                })
+
+    if nav_rows:
+        st.subheader("Navigation")
+        st.dataframe(pd.DataFrame(nav_rows), use_container_width=True, hide_index=True)
+
+    # UI interaction shortcuts (documented, not JS-wired)
+    st.subheader("Interface")
+    ui_rows = [
+        {"Shortcut": "◀ List button",    "Action": "Collapse item list panel (Inventory)", "Category": "Inventory"},
+        {"Shortcut": "▶ List button",    "Action": "Expand item list panel",               "Category": "Inventory"},
+        {"Shortcut": "↗ Open button",    "Action": "Open recipe in new workspace tab",     "Category": "PCA"},
+        {"Shortcut": "✕ Close (tab)",    "Action": "Close active PCA recipe tab",          "Category": "PCA"},
+        {"Shortcut": "Alt + B",          "Action": "Cycle sidebar: full → narrow → hidden","Category": "View"},
+        {"Shortcut": "Alt + F (browser)","Action": "Enter fullscreen (View → Full Screen)","Category": "View"},
+    ]
+    st.dataframe(pd.DataFrame(ui_rows), use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.caption(
+        "Shortcuts are injected into the parent page via the UHA nav bar. "
+        "They will not fire while focus is inside a text input."
+    )
+
+
+# ────────────────────────────────────────────────────────────────────
 # SETTINGS PAGE  (admin only)
 # ────────────────────────────────────────────────────────────────────
 
@@ -686,6 +856,19 @@ def main() -> None:
         st.rerun()
         return
 
+    # ── Sidebar state cycle from nav Toggle Sidebar item ─────────────
+    if st.query_params.get("_sb_cycle"):
+        _sb_states = ["full", "narrow", "hidden"]
+        _sb_cur    = st.session_state.get("sidebar_state", "full")
+        try:
+            _sb_idx = _sb_states.index(_sb_cur)
+        except ValueError:
+            _sb_idx = 0
+        st.session_state["sidebar_state"] = _sb_states[(_sb_idx + 1) % 3]
+        del st.query_params["_sb_cycle"]
+        st.rerun()
+        return
+
     # ── Auth gate ─────────────────────────────────────────────────────
     # Note: Auth happens before database connection
     # Use a temporary DB instance just for user table
@@ -724,9 +907,16 @@ def main() -> None:
     if page in registry.page_keys():
         registry.dispatch(page)
 
-    # Settings (app-level, not a module)
+    # Settings — redirect to the App Management module
     elif page in ("settings", "settings_sidebar", "settings_prefs"):
-        _page_settings(db, feat_registry, syncer)
+        if "app_management" in registry.page_keys():
+            registry.dispatch("app_management")
+        else:
+            _page_settings(db, feat_registry, syncer)  # fallback
+
+    # Keyboard shortcuts reference
+    elif page == "help":
+        _page_help(registry)
 
     # Hidden admin import tool
     elif page == "db_import":

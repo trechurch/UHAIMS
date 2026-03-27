@@ -411,14 +411,39 @@ class PCAEngine:
             max_suggestions=max_suggestions,
         )
 
-        key = api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("LLM_API_KEY")
-        if not key:
+        # ── F-034: Check cache before hitting the API ─────────────────────────
+        if self.db:
+            try:
+                cached = self.db.get_cached_suggestions(recipe_id)
+                if cached:
+                    return [{
+                        "ingredient_to_replace":      r["ingredient_key"],
+                        "alternate_item_key":         r.get("alternate_key"),
+                        "alternate_item_description": r.get("alternate_description", ""),
+                        "alternate_vendor":           r.get("alternate_vendor", ""),
+                        "alternate_cost_per_portion": 0.0,
+                        "alternate_cost_variance":    float(r.get("cost_delta") or 0),
+                        "product_cost_pct_effect":    float(r.get("estimated_pct") or 0),
+                        "_from_cache":                True,
+                    } for r in cached][:max_suggestions]
+            except Exception:
+                pass
+
+        api_key_val = api_key or os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("LLM_API_KEY")
+        if not api_key_val:
             return []
 
         try:
-            response_text = self._call_anthropic(prompt, api_key=key)
+            response_text = self._call_anthropic(prompt, api_key=api_key_val)
             suggestions = self._parse_suggestions(response_text, pca)
-            return suggestions[:max_suggestions]
+            result = suggestions[:max_suggestions]
+            # Save to cache
+            if self.db and result:
+                try:
+                    self.db.save_suggestions(recipe_id, result)
+                except Exception:
+                    pass
+            return result
         except Exception as exc:
             print(f"[PCAEngine] AI suggestion error: {exc}")
             return []

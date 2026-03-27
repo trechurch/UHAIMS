@@ -103,9 +103,10 @@ class GLDashboard(Dashboard):
 
         st.markdown("---")
 
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
             "🏢 Cost Center", "📁 GL Lists Import",
-            "🏷️ Bulk GL Assign", "📂 Upload Mapping", "🤖 Auto-Assign",
+            "🏷️ Bulk GL Assign", "📂 Upload Mapping",
+            "🤖 Auto-Assign", "✏️ Manual Entry",
         ])
 
         with tab1:
@@ -118,6 +119,8 @@ class GLDashboard(Dashboard):
             self._tab_upload_mapping()
         with tab5:
             self._tab_auto_assign()
+        with tab6:
+            self._tab_manual_entry()
 
     # ── Tab 2: GL Lists Import ────────────────────────────────────────────────
 
@@ -423,12 +426,17 @@ class GLDashboard(Dashboard):
         # ── GL assignment form ────────────────────────────────────────────────
         st.markdown("---")
 
-        # Quick-pick from codes already in the DB
-        existing_codes = sorted({
+        # Quick-pick: catalog codes first, then codes already in items table
+        _catalog_codes = {
+            f"{c['gl_code']} — {c.get('gl_name','')}"
+            for c in self.db.get_gl_catalog()
+        }
+        _item_codes = {
             f"{i['gl_code']} — {i.get('gl_name','')}"
             for i in self.db.get_all_items()
             if i.get("gl_code")
-        })
+        }
+        existing_codes = sorted(_catalog_codes | _item_codes)
 
         with st.form("gl_assign_form"):
             ac1, ac2 = st.columns(2)
@@ -633,5 +641,52 @@ class GLDashboard(Dashboard):
                     ],
                     use_container_width=True, hide_index=True,
                 )
+
+    # ── Tab 6: Manual Entry ───────────────────────────────────────────────────
+
+    def _tab_manual_entry(self) -> None:
+        st.subheader("✏️ GL Code Catalog")
+        st.caption(
+            "Register GL codes and names here — they'll appear in the Quick-pick "
+            "dropdown in Bulk GL Assign without needing items assigned first."
+        )
+
+        # ── Add / Update form ─────────────────────────────────────────────────
+        with st.form("gl_catalog_form", clear_on_submit=True):
+            mc1, mc2 = st.columns([1, 3])
+            gl_code  = mc1.text_input("GL Code *", max_chars=12, placeholder="411048")
+            gl_name  = mc2.text_input("GL Name *", placeholder="Food — Beef & Pork")
+            notes    = st.text_input("Notes (optional)",
+                                     placeholder="Protein items, cost center 57231 typical")
+            submitted = st.form_submit_button("➕ Add / Update", type="primary")
+
+        if submitted:
+            if not gl_code.strip() or not gl_name.strip():
+                st.error("GL Code and GL Name are required.")
+            else:
+                if self.db.upsert_gl_code(gl_code.strip(), gl_name.strip(), notes.strip()):
+                    st.success(f"✅ Saved **{gl_code.strip()} — {gl_name.strip()}**")
+                    st.rerun()
+                else:
+                    st.error("Save failed — check logs.")
+
+        # ── Catalog table ─────────────────────────────────────────────────────
+        st.markdown("---")
+        catalog = self.db.get_gl_catalog()
+        if not catalog:
+            st.info("No GL codes registered yet. Use the form above to add some.")
+            return
+
+        st.caption(f"{len(catalog)} registered code(s)")
+        for entry in catalog:
+            col_code, col_name, col_notes, col_del = st.columns([1, 3, 3, 1])
+            col_code.markdown(f"`{entry['gl_code']}`")
+            col_name.write(entry['gl_name'])
+            col_notes.caption(entry.get('notes') or "—")
+            if col_del.button("🗑️", key=f"gl_cat_del_{entry['gl_code']}",
+                              help="Delete from catalog"):
+                self.db.delete_gl_code(entry['gl_code'])
+                st.rerun()
+
 
 # ── end of GLDashboard ────────────────────────────────────────────────────────

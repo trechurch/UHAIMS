@@ -813,6 +813,169 @@ class InventoryDatabase:
         return {"applied": applied, "cloned": cloned, "warnings": warnings}
 
     # ──────────────────────────────────────────────────────────────────────────
+    #  POS ↔ INVENTORY MAPPING  (F-037)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def ensure_pos_item_map_table(self) -> None:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS pos_item_map (
+                    id                  SERIAL PRIMARY KEY,
+                    pos_item_name       TEXT NOT NULL UNIQUE,
+                    inventory_key       TEXT,
+                    inventory_description TEXT,
+                    is_chargeable       BOOLEAN DEFAULT TRUE,
+                    sort_order          INTEGER DEFAULT 0,
+                    notes               TEXT,
+                    created_at          TIMESTAMPTZ DEFAULT NOW(),
+                    last_updated        TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE INDEX IF NOT EXISTS idx_pos_item_map_key
+                    ON pos_item_map(inventory_key);
+            """)
+
+    def get_pos_item_map(self) -> List[Dict]:
+        try:
+            self.ensure_pos_item_map_table()
+            with get_conn() as conn:
+                cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                cur.execute("""
+                    SELECT * FROM pos_item_map ORDER BY sort_order, pos_item_name
+                """)
+                return [dict(r) for r in cur.fetchall()]
+        except Exception:
+            return []
+
+    def upsert_pos_mapping(self, pos_item_name: str,
+                           inventory_key: str = None,
+                           inventory_description: str = None,
+                           is_chargeable: bool = True,
+                           sort_order: int = 0,
+                           notes: str = "") -> bool:
+        try:
+            self.ensure_pos_item_map_table()
+            with get_conn() as conn:
+                conn.cursor().execute("""
+                    INSERT INTO pos_item_map
+                        (pos_item_name, inventory_key, inventory_description,
+                         is_chargeable, sort_order, notes, last_updated)
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (pos_item_name) DO UPDATE SET
+                        inventory_key         = EXCLUDED.inventory_key,
+                        inventory_description = EXCLUDED.inventory_description,
+                        is_chargeable         = EXCLUDED.is_chargeable,
+                        sort_order            = EXCLUDED.sort_order,
+                        notes                 = EXCLUDED.notes,
+                        last_updated          = NOW()
+                """, (pos_item_name, inventory_key, inventory_description,
+                      is_chargeable, sort_order, notes))
+            return True
+        except Exception as exc:
+            print(f"[DB] upsert_pos_mapping failed: {exc}")
+            return False
+
+    def delete_pos_mapping(self, pos_item_name: str) -> bool:
+        try:
+            with get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM pos_item_map WHERE pos_item_name = %s",
+                            (pos_item_name,))
+                return cur.rowcount > 0
+        except Exception:
+            return False
+
+    #  AI SUGGESTION CACHE  (F-034)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def ensure_recipe_alternates_table(self) -> None:
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS recipe_alternates (
+                    id                      SERIAL PRIMARY KEY,
+                    recipe_id               INTEGER NOT NULL,
+                    ingredient_key          TEXT NOT NULL,
+                    alternate_key           TEXT,
+                    alternate_description   TEXT,
+                    alternate_vendor        TEXT,
+                    cost_delta              NUMERIC(10,6),
+                    estimated_pct           NUMERIC(10,6),
+                    suggested_at            TIMESTAMPTZ DEFAULT NOW(),
+                    accepted                BOOLEAN DEFAULT FALSE,
+                    rejected                BOOLEAN DEFAULT FALSE
+                );
+                CREATE INDEX IF NOT EXISTS idx_recipe_alternates_recipe
+                    ON recipe_alternates(recipe_id, suggested_at DESC);
+            """)
+
+    def get_cached_suggestions(self, recipe_id: int,
+                                max_age_days: int = 7) -> Optional[List[Dict]]:
+        """Return cached suggestions for a recipe if they exist and are fresh."""
+        try:
+            self.ensure_recipe_alternates_table()
+            with get_conn() as conn:
+                cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                cur.execute("""
+                    SELECT ingredient_key, alternate_key, alternate_description,
+                           alternate_vendor, cost_delta, estimated_pct,
+                           suggested_at, accepted, rejected
+                    FROM recipe_alternates
+                    WHERE recipe_id = %s
+                      AND suggested_at > NOW() - INTERVAL '%s days'
+                    ORDER BY suggested_at DESC
+                """, (recipe_id, max_age_days))
+                rows = cur.fetchall()
+                if not rows:
+                    return None
+                return [dict(r) for r in rows]
+        except Exception:
+            return None
+
+    def save_suggestions(self, recipe_id: int, suggestions: List[Dict]) -> None:
+        """Persist a fresh batch of AI suggestions, replacing any prior batch."""
+        try:
+            self.ensure_recipe_alternates_table()
+            with get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "DELETE FROM recipe_alternates WHERE recipe_id = %s",
+                    (recipe_id,)
+                )
+                for s in suggestions:
+                    cur.execute("""
+                        INSERT INTO recipe_alternates
+                            (recipe_id, ingredient_key, alternate_key,
+                             alternate_description, alternate_vendor,
+                             cost_delta, estimated_pct)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        recipe_id,
+                        s.get("ingredient_to_replace", ""),
+                        s.get("alternate_item_key"),
+                        s.get("alternate_item_description", ""),
+                        s.get("alternate_vendor", ""),
+                        s.get("alternate_cost_variance"),
+                        s.get("product_cost_pct_effect"),
+                    ))
+        except Exception as exc:
+            print(f"[DB] save_suggestions failed: {exc}")
+
+    def mark_suggestion_accepted(self, recipe_id: int,
+                                  ingredient_key: str,
+                                  alternate_key: str) -> None:
+        try:
+            with get_conn() as conn:
+                conn.cursor().execute("""
+                    UPDATE recipe_alternates
+                    SET accepted = TRUE
+                    WHERE recipe_id = %s
+                      AND ingredient_key = %s
+                      AND alternate_key = %s
+                """, (recipe_id, ingredient_key, alternate_key))
+        except Exception:
+            pass
+
     #  COUNT OVERRIDES  (F-031)
     # ──────────────────────────────────────────────────────────────────────────
 
@@ -1025,6 +1188,20 @@ class InventoryDatabase:
     # ──────────────────────────────────────────────────────────────────────────
     #  HISTORY
     # ──────────────────────────────────────────────────────────────────────────
+
+    def get_history_by_source_document(self, source_document: str) -> List[Dict]:
+        """Return all item_history rows written during a specific import job."""
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("""
+                SELECT item_key, field_changed, old_value, new_value,
+                       change_date, changed_by
+                FROM item_history
+                WHERE source_document = %s
+                  AND change_type = 'update'
+                ORDER BY item_key, field_changed
+            """, (source_document,))
+            return [dict(r) for r in cur.fetchall()]
 
     def get_item_history(self, key: str, limit: int = 100) -> List[Dict]:
         with get_conn() as conn:
@@ -1337,6 +1514,60 @@ class InventoryDatabase:
             )
 
     # ── end of user management ────────────────────────────────────────────────
+
+    # ──────────────────────────────────────────────────────────────────────────
+    #  GL CATALOG  (F-029 — manually registered GL codes)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def ensure_gl_catalog_table(self) -> None:
+        with get_conn() as conn:
+            conn.cursor().execute("""
+                CREATE TABLE IF NOT EXISTS gl_catalog (
+                    gl_code   TEXT PRIMARY KEY,
+                    gl_name   TEXT NOT NULL DEFAULT '',
+                    notes     TEXT DEFAULT '',
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+
+    def get_gl_catalog(self) -> List[Dict]:
+        try:
+            self.ensure_gl_catalog_table()
+            with get_conn() as conn:
+                cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                cur.execute("SELECT gl_code, gl_name, notes FROM gl_catalog ORDER BY gl_code")
+                return [dict(r) for r in cur.fetchall()]
+        except Exception:
+            return []
+
+    def upsert_gl_code(self, gl_code: str, gl_name: str, notes: str = "") -> bool:
+        try:
+            self.ensure_gl_catalog_table()
+            with get_conn() as conn:
+                conn.cursor().execute("""
+                    INSERT INTO gl_catalog (gl_code, gl_name, notes)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (gl_code) DO UPDATE
+                        SET gl_name = EXCLUDED.gl_name,
+                            notes   = EXCLUDED.notes
+                """, (gl_code.strip(), gl_name.strip(), notes.strip()))
+            return True
+        except Exception as exc:
+            print(f"upsert_gl_code error: {exc}")
+            return False
+
+    def delete_gl_code(self, gl_code: str) -> bool:
+        try:
+            with get_conn() as conn:
+                conn.cursor().execute(
+                    "DELETE FROM gl_catalog WHERE gl_code = %s", (gl_code,)
+                )
+            return True
+        except Exception as exc:
+            print(f"delete_gl_code error: {exc}")
+            return False
+
+    # ── end of GL catalog ─────────────────────────────────────────────────────
     # ── end of internals ──────────────────────────────────────────────────────
 
 # ── end of InventoryDatabase ──────────────────────────────────────────────────

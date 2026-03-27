@@ -155,8 +155,8 @@ class VersionSyncer:
 
     # ── GitHub fetch ──────────────────────────────────────────────────────────
 
-    def _fetch_version(self, filepath: str) -> Optional[str]:
-        """Fetch a file from GitHub and parse its version string."""
+    def _fetch_raw(self, filepath: str) -> Optional[str]:
+        """Fetch raw file content from GitHub. Returns None on failure."""
         url = f"{self._base_url}/{filepath}"
         headers = {}
         try:
@@ -168,10 +168,35 @@ class VersionSyncer:
         try:
             resp = requests.get(url, headers=headers, timeout=5)
             if resp.status_code == 200:
-                return _parse_version(resp.text)
+                return resp.text
         except Exception:
             pass
         return None
+
+    def _fetch_version(self, filepath: str) -> Optional[str]:
+        """Fetch a file from GitHub and parse its version string."""
+        content = self._fetch_raw(filepath)
+        return _parse_version(content) if content else None
+
+    def _fetch_changelog(self, filepath: str) -> List[dict]:
+        """
+        Fetch a file from GitHub and extract its changelog list.
+        Handles Python list literals in MANIFEST/DOCS dicts.
+        Returns list of {version, date, note} dicts, newest first.
+        """
+        content = self._fetch_raw(filepath)
+        if not content:
+            return []
+        # Find 'changelog': [ ... ] block (greedy enough for multi-line)
+        m = re.search(r'"changelog"\s*:\s*(\[.*?\])', content, re.DOTALL)
+        if not m:
+            return []
+        import ast
+        try:
+            entries = ast.literal_eval(m.group(1))
+            return [e for e in entries if isinstance(e, dict)]
+        except Exception:
+            return []
 
     # ── Live version readers ──────────────────────────────────────────────────
 
@@ -345,6 +370,27 @@ class VersionSyncer:
             use_container_width=True,
             hide_index=True,
         )
+
+        # Changelog expanders for out-of-sync components (F-026)
+        if out_of_sync:
+            st.markdown("#### What changed")
+            for r in out_of_sync:
+                with st.expander(f"📋 {r.name}  `{r.live}` → `{r.repo}`", expanded=False):
+                    with st.spinner("Fetching changelog…"):
+                        entries = self._fetch_changelog(r.filepath)
+                    if not entries:
+                        st.caption("No changelog found in this file.")
+                    else:
+                        # Show entries newer than live version
+                        for e in entries:
+                            v = e.get("version", "")
+                            note = e.get("note", "")
+                            date = e.get("date", "")
+                            marker = "🆕 " if v == r.repo else ("🔹 " if v != r.live else "")
+                            st.markdown(
+                                f"{marker}**{v}** <span style='color:#718096;font-size:11px'>{date}</span>  \n{note}",
+                                unsafe_allow_html=True,
+                            )
 
         st.caption(
             "Hot Reload clears the module registry cache and reruns the app. "

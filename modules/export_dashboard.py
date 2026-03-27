@@ -16,7 +16,7 @@ class ExportDashboard(Dashboard):
     MANIFEST = {
         "id":       "export_dashboard",
         "label":    "Export",
-        "version":  "1.0.0",
+        "version":  "1.1.0",
         "icon":     "📤",
         "status":   "active",
         "page_key": "export",
@@ -49,6 +49,7 @@ class ExportDashboard(Dashboard):
         "notes":   "Exports all active items. OneDrive integration is optional.",
         "known_issues": [],
         "changelog": [
+            {"version": "1.1.0", "date": "2026-03-27", "note": "F-030: filter controls (status, GL code, vendor, status tag) above download buttons."},
             {"version": "1.0.0", "date": "2026-03-25", "note": "Migrated from inventory_logic.page_export() to SDOA module."},
         ],
     }
@@ -69,7 +70,7 @@ class ExportDashboard(Dashboard):
         st.title("📤 Export Inventory")
 
         try:
-            items = self.db.get_all_items()
+            items = self.db.get_all_items(record_status=None)
         except Exception as exc:
             st.error(f"Could not load inventory: {exc}")
             return
@@ -79,7 +80,44 @@ class ExportDashboard(Dashboard):
             return
 
         df = pd.DataFrame(items)
-        st.caption(f"{len(df)} active items")
+
+        # ── Filter controls ───────────────────────────────────────────────────
+        with st.expander("🔽 Filter export", expanded=False):
+            fc1, fc2, fc3, fc4 = st.columns(4)
+
+            # Status
+            statuses = sorted(df["record_status"].dropna().unique().tolist())
+            sel_status = fc1.multiselect(
+                "Status", statuses,
+                default=["active"],
+                key="exp_filter_status",
+            )
+
+            # GL Code
+            gl_codes = sorted(df["gl_code"].dropna().unique().tolist())
+            sel_gl = fc2.multiselect("GL Code", gl_codes, key="exp_filter_gl")
+
+            # Vendor
+            vendors = sorted(df["vendor"].dropna().unique().tolist())
+            sel_vendor = fc3.multiselect("Vendor", vendors, key="exp_filter_vendor")
+
+            # Status tag
+            tags = sorted(df["status_tag"].dropna().unique().tolist())
+            sel_tag = fc4.multiselect("Status Tag", tags, key="exp_filter_tag")
+
+        # Apply filters
+        mask = pd.Series([True] * len(df), index=df.index)
+        if sel_status:
+            mask &= df["record_status"].isin(sel_status)
+        if sel_gl:
+            mask &= df["gl_code"].isin(sel_gl)
+        if sel_vendor:
+            mask &= df["vendor"].isin(sel_vendor)
+        if sel_tag:
+            mask &= df["status_tag"].isin(sel_tag)
+        df = df[mask].reset_index(drop=True)
+
+        st.caption(f"{len(df)} item(s) — {len(items) - len(df)} filtered out")
 
         # Strip timezone from any datetime columns — Excel doesn't support tz-aware
         for col in df.select_dtypes(include=["datetimetz"]).columns:

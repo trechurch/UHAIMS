@@ -69,6 +69,7 @@ class MenuItem:
     db_key:       str               = ""      # cost center code for switcher items
     js_action:    str               = ""      # raw JS for browser-native actions
     icon:         str               = ""
+    shortcut:     str               = ""      # keyboard shortcut key (Alt+key)
     action:       Optional[Callable] = None
     feature_flag: str               = ""
     separator:    bool              = False
@@ -76,7 +77,10 @@ class MenuItem:
 
     @property
     def full_label(self) -> str:
-        return f"{self.icon} &nbsp;{self.label}" if self.icon else self.label
+        label = f"{self.icon} &nbsp;{self.label}" if self.icon else self.label
+        if self.shortcut:
+            label += f' <span class="uha-nav-shortcut">Alt+{self.shortcut}</span>'
+        return label
 
 # ── end of menu item ──────────────────────────────────────────────────────────
 
@@ -145,22 +149,22 @@ class MenuBar:
             # not a separate DB connection. Switching cost center is in Settings.
             MenuItem(label="Dashboards", children=[
                 MenuItem("Database",      page_key="dashboard",  icon="🏠",
-                         feature_flag="dashboard"),
+                         shortcut="D", feature_flag="dashboard"),
                 MenuItem("Inventory",     page_key="inventory",  icon="📦",
-                         feature_flag="inventory"),
+                         shortcut="I", feature_flag="inventory"),
                 MenuItem("PCA",           page_key="pca",        icon="🧪",
-                         feature_flag="pca_engine"),
+                         shortcut="P", feature_flag="pca_engine"),
                 MenuItem("Import",        page_key="import",     icon="📥",
-                         feature_flag="vendor_import"),
+                         shortcut="M", feature_flag="vendor_import"),
                 MenuItem("", separator=True),
                 MenuItem("Count Import",  page_key="count",       icon="📋",
-                         feature_flag="count_import"),
+                         shortcut="C", feature_flag="count_import"),
                 MenuItem("Count Entry",   page_key="count_entry", icon="📝",
                          feature_flag="count_entry"),
                 MenuItem("Transfer",      page_key="transfer",   icon="🔀",
-                         feature_flag="transfer_engine"),
+                         shortcut="T", feature_flag="transfer_engine"),
                 MenuItem("App Management", page_key="app_management", icon="⚙️",
-                         feature_flag="app_management"),
+                         shortcut="A", feature_flag="app_management"),
             ]),
 
             # ── View  (spec 3.3) ──────────────────────────────────────────────
@@ -168,16 +172,28 @@ class MenuBar:
                 MenuItem("Full Screen",
                          icon="⛶",
                          js_action="document.documentElement.requestFullscreen();"),
+                MenuItem("", separator=True),
+                MenuItem("Zoom 75%",  icon="🔍",
+                         js_action="document.body.style.zoom='0.75';"),
+                MenuItem("Zoom 90%",  icon="🔍",
+                         js_action="document.body.style.zoom='0.90';"),
+                MenuItem("Zoom 100%", icon="🔍",
+                         js_action="document.body.style.zoom='1.0';"),
+                MenuItem("Zoom 125%", icon="🔍",
+                         js_action="document.body.style.zoom='1.25';"),
+                MenuItem("Zoom 150%", icon="🔍",
+                         js_action="document.body.style.zoom='1.5';"),
+                MenuItem("", separator=True),
                 MenuItem("Style",     page_key="settings", icon="🎨",
                          feature_flag="settings"),
                 MenuItem("", separator=True),
                 MenuItem("Toggle Sidebar",
                          icon="◀",
+                         shortcut="B",
                          js_action=(
-                             "var btn=document.querySelector('[data-testid=\"collapsedControl\"]')"
-                             "||document.querySelector('[title=\"Open sidebar\"]')"
-                             "||document.querySelector('[title=\"Close sidebar\"]');"
-                             "if(btn)btn.click();"
+                             "var u=new URL(window.location.href);"
+                             "u.searchParams.set('_sb_cycle','1');"
+                             "window.location.href=u.toString();"
                          )),
                 MenuItem("", separator=True),
                 MenuItem("GL Codes",  page_key="gl_codes", icon="🏷️",
@@ -243,8 +259,9 @@ class MenuBar:
                              "Inventory Management System\\n"
                              "Compass Group · UH Athletics');"
                          )),
-                MenuItem("What's New",  page_key="changelog",  icon="🆕",
+                MenuItem("What's New",       page_key="changelog",  icon="🆕",
                          feature_flag="changelog"),
+                MenuItem("Keyboard Shortcuts", page_key="help",     icon="⌨️"),
                 MenuItem("", separator=True),
                 MenuItem("Report Issue",
                          icon="🐛",
@@ -476,8 +493,10 @@ def build_default_registry() -> FeatureRegistry:
     reg.add("transfer_engine",      "Transfer Sheet Generator",      True)
     reg.add("count_entry",          "Physical Count Entry",          True)
     reg.add("match_review",         "Intelligent Match Review",      True)
+    reg.add("overrides",            "Count Override Rule Manager",   True)
+    reg.add("pos_map",              "POS ↔ Inventory Mapping",       True)
+    reg.add("app_management",       "App Management Dashboard",      True)
     # ── Disabled until modules are built ─────────────────────────────────────
-    reg.add("app_management",       "App Management Dashboard",      False)
     reg.add("changelog",            "What's New / Changelog",        False)
     reg.add("compare_counts",       "Compare Count Files",           False)
     reg.add("import_mode_selector", "Import Mode Selector",          False)

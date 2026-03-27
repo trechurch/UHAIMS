@@ -52,7 +52,6 @@ class CountDashboard(Dashboard):
             "FMT_B/C/D (catering). Format auto-detected with confidence scoring."
         ),
         "known_issues": [
-            "FMT_D slash-delimited: one known discrepancy on 20oz Dasani Bottled Water.",
             "Image-only PDFs (FMT_E) still require OCR — text-layer PDFs now supported via pdfplumber.",
         ],
         "changelog": [

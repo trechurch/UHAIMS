@@ -257,12 +257,13 @@ class InventoryImporter:
 
     def _analyze_loop(self, df: pd.DataFrame, existing: Dict[str, dict]) -> Dict:
         analysis = {
-            'total_rows': len(df),
-            'new_items':  [],
-            'updates':    [],
-            'skipped':    [],
-            'flagged':    [],   # ← new: needs review before commit
-            'errors':     [],
+            'total_rows':    len(df),
+            'new_items':     [],
+            'updates':       [],
+            'skipped':       [],
+            'flagged':       [],   # ← needs review before commit
+            'price_alerts':  [],   # ← cost change > 20% vs existing
+            'errors':        [],
         }
         for idx, row in df.iterrows():
             row = row.where(pd.notna(row), None)
@@ -291,14 +292,19 @@ class InventoryImporter:
             existing_conv = None
             if key in existing:
                 existing_conv = existing[key].get('conv_ratio')
-            conv_ratio, conv_unit, confidence, flag_reason = parse_pack(
+            conv_ratio, conv_unit, _conf_str, flag_reason = parse_pack(
                 pack_raw, per_raw, existing_conv
             )
+            # F-035: convert string confidence → float, adjusted for field completeness
+            _conf_base = {"high": 0.95, "medium": 0.72, "low": 0.40}.get(_conf_str, 0.50)
+            if not _scalar(row.get('cost')):
+                _conf_base -= 0.10
+            confidence = round(min(1.0, max(0.0, _conf_base)), 2)
 
             item_data = self._prepare_row(row, key, pack_norm, conv_ratio, conv_unit)
 
             # ── Flag low-confidence rows ──────────────────────────────────
-            if confidence == 'low':
+            if _conf_str == 'low':
                 analysis['flagged'].append({
                     'key':         key,
                     'description': description,
@@ -318,6 +324,22 @@ class InventoryImporter:
                     if item_data.get(f) is not None
                     and str(current.get(f)) != str(item_data.get(f))
                 }
+
+                # ── F-036: Price volatility check ─────────────────────────
+                old_cost = float(current.get('cost') or 0)
+                new_cost = float(item_data.get('cost') or 0)
+                if old_cost > 0 and new_cost > 0:
+                    pct_change = abs(new_cost - old_cost) / old_cost
+                    if pct_change > 0.20:
+                        analysis['price_alerts'].append({
+                            'key':         key,
+                            'description': description,
+                            'old_cost':    old_cost,
+                            'new_cost':    new_cost,
+                            'pct_change':  round(pct_change * 100, 1),
+                            'direction':   'up' if new_cost > old_cost else 'down',
+                        })
+
                 analysis['updates'].append({
                     'key':         key,
                     'description': description,
