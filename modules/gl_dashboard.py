@@ -193,50 +193,67 @@ class GLDashboard(Dashboard):
                 value=True, key="gl_lists_only_unset",
             )
 
-            if st.button("🔍 Preview Matches", key="gl_lists_preview"):
-                with st.spinner("Running fuzzy match…"):
-                    # Preview only — pass a throw-away lambda instead of db.update_item
-                    preview = assign_gl_codes(
+            st.markdown(
+                "**Phase 1** (Exact) and **Phase 2** (Fuzzy ≥ threshold) are auto-committed.  \n"
+                "**Phase 3** (Probabilistic) and Unmatched items open in **Match Review** for manual decisions."
+            )
+
+            btn_col, info_col = st.columns([1, 2])
+            with btn_col:
+                run_match = st.button("🚀 Run Matching Passes",
+                                      key="gl_lists_run_match", type="primary")
+            with info_col:
+                pending = st.session_state.get("match_review_session")
+                if pending:
+                    stats = pending.get("stats", {})
+                    n_pending = (len(pending.get("probabilistic", []))
+                                 + len(pending.get("unmatched", [])))
+                    st.info(
+                        f"Active session: **{stats.get('auto_assigned',0)}** auto-assigned · "
+                        f"**{n_pending}** awaiting review"
+                    )
+
+            if run_match:
+                with st.spinner("Running 3-pass match engine…"):
+                    result = assign_gl_codes(
                         self.db, categories,
                         min_score=threshold,
-                        changed_by="preview",
+                        changed_by=_get_changed_by(),
                         only_unassigned=only_unset,
                     )
-                st.info(
-                    f"Would assign: **{preview['assigned']}**  ·  "
-                    f"No match: **{preview['no_match']}**  ·  "
-                    f"Already set (skipped): **{preview['skipped']}**"
-                )
-                if preview["matches"]:
-                    st.dataframe(
-                        pd.DataFrame(preview["matches"])[
-                            ["item", "matched_to", "score", "gl_code", "gl_name"]
-                        ],
-                        use_container_width=True, hide_index=True, height=350,
-                    )
-                st.session_state["gl_lists_preview_done"] = True
+                # Store session for review dashboard
+                st.session_state["match_review_session"]   = result
+                st.session_state["match_review_decisions"] = {}
+                st.session_state["match_review_cursor"]    = 0
 
-            if st.session_state.get("gl_lists_preview_done"):
-                confirmed = st.checkbox(
-                    "Confirm: write these GL code assignments",
-                    key="gl_lists_assign_confirm",
+                stats = result["stats"]
+                n_review = (len(result.get("probabilistic", []))
+                            + len(result.get("unmatched", [])))
+
+                st.success(
+                    f"✅ Auto-assigned: **{result['assigned']}** "
+                    f"(exact: {stats.get('exact',0)} · fuzzy: {stats.get('fuzzy',0)})"
                 )
-                if st.button("✅ Assign GL Codes", type="primary",
-                             disabled=not confirmed, key="gl_lists_assign_go"):
-                    with st.spinner("Writing…"):
-                        result = assign_gl_codes(
-                            self.db, categories,
-                            min_score=threshold,
-                            changed_by=_get_changed_by(),
-                            only_unassigned=only_unset,
+                if result["matches"]:
+                    with st.expander(f"📋 {len(result['matches'])} auto-assigned matches"):
+                        st.dataframe(
+                            pd.DataFrame(result["matches"])[
+                                ["item", "matched_to", "score", "gl_code", "gl_name", "phase"]
+                            ],
+                            use_container_width=True, hide_index=True, height=300,
                         )
-                    st.success(
-                        f"✅ Assigned: **{result['assigned']}**  ·  "
-                        f"No match: **{result['no_match']}**  ·  "
-                        f"Skipped: **{result['skipped']}**"
+
+                if n_review:
+                    st.warning(
+                        f"**{n_review} items need manual review** "
+                        f"({stats.get('probabilistic',0)} probabilistic · "
+                        f"{stats.get('unmatched',0)} unmatched)."
                     )
-                    st.session_state["gl_lists_preview_done"] = False
-                    st.rerun()
+                    st.page_link("?page=match_review",
+                                 label="🔍 Open Match Review →",
+                                 help="Review low-confidence matches with degree-of-comparison scoring")
+                else:
+                    st.success("All items matched — no manual review needed!")
 
         else:
             # ── Import as master list ─────────────────────────────────────────

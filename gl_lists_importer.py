@@ -182,7 +182,7 @@ def scan_gl_lists_folder(folder: Path = GL_LISTS_DIR) -> List[Dict]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-#  OPERATION 1: Assign GL codes to existing items (fuzzy description match)
+#  OPERATION 1: Assign GL codes — multi-phase matching engine
 # ──────────────────────────────────────────────────────────────────────────────
 
 def assign_gl_codes(db, categories: List[Dict],
@@ -190,64 +190,73 @@ def assign_gl_codes(db, categories: List[Dict],
                     changed_by: str = "gl_lists_import",
                     only_unassigned: bool = True) -> Dict:
     """
-    For each existing DB item, find the best fuzzy description match across
-    all GL list items, then write the GL code if score >= min_score.
+    Run the multi-phase matching engine against all existing DB items.
 
-    Returns {"assigned": int, "skipped": int, "no_match": int, "matches": list}
+    Phase 1 (Exact) and Phase 2 (Fuzzy, WRatio ≥ min_score) are auto-committed.
+    Phase 3 (Probabilistic) and Unmatched items are returned in "pending_review"
+    for the Match Review Dashboard.
+
+    Returns a session dict compatible with match_engine.run_multiphase_match():
+      {
+        "exact":          [...],
+        "fuzzy":          [...],
+        "probabilistic":  [...],   ← awaiting manual review
+        "unmatched":      [...],   ← awaiting manual review
+        "stats":          {...},
+        "assigned":       int,     # items auto-committed this run
+        "skipped":        int,     # items already had a GL code
+        "matches":        [...],   # legacy compat — auto-committed matches
+      }
     """
-    from rapidfuzz import process, fuzz
+    from match_engine import run_multiphase_match, FUZZY_THRESHOLD
 
-    # Build a flat lookup: UPPER description → (gl_code, gl_name)
-    gl_map: Dict[str, Tuple[str, str]] = {}
-    for cat in categories:
-        for item in cat["items"]:
-            gl_map[item["description"].upper()] = (cat["gl_code"], cat["gl_name"])
+    # Items already assigned are counted as skipped (not fed to engine)
+    db_items = db.get_all_items("active")
+    skipped  = sum(1 for i in db_items if only_unassigned and i.get("gl_code"))
 
-    descriptions   = list(gl_map.keys())
-    db_items       = db.get_all_items("active")
-    assigned, skipped, no_match = 0, 0, 0
-    matches = []
+    session = run_multiphase_match(db_items, categories,
+                                   only_unassigned=only_unassigned)
 
-    for db_item in db_items:
-        if only_unassigned and db_item.get("gl_code"):
-            skipped += 1
+    # Auto-commit exact + fuzzy matches
+    assigned = 0
+    matches  = []
+    for mr in session["exact"] + session["fuzzy"]:
+        best = mr["candidates"][0] if mr["candidates"] else None
+        if not best:
             continue
-
-        query = (db_item.get("description") or "").upper().strip()
-        if not query:
-            no_match += 1
+        # For fuzzy pass, enforce min_score on WRatio
+        if mr["phase"] == "fuzzy" and best["wratio"] < min_score:
+            session["probabilistic"].append(
+                {**mr, "phase": "probabilistic"}
+            )
             continue
+        try:
+            db.update_item(
+                mr["db_item"]["key"],
+                {"gl_code": best["gl_code"], "gl_name": best["gl_name"]},
+                changed_by=changed_by,
+            )
+            assigned += 1
+            matches.append({
+                "item":       mr["db_item"].get("description", ""),
+                "matched_to": best["description"],
+                "score":      best["wratio"],
+                "gl_code":    best["gl_code"],
+                "gl_name":    best["gl_name"],
+                "phase":      mr["phase"],
+            })
+        except Exception as exc:
+            logger.error("update_item failed for %s: %s",
+                         mr["db_item"].get("key"), exc)
 
-        result = process.extractOne(query, descriptions,
-                                    scorer=fuzz.WRatio,
-                                    score_cutoff=min_score)
-        if result is None:
-            no_match += 1
-            continue
+    session["assigned"] = assigned
+    session["skipped"]  = skipped
+    session["matches"]  = matches
 
-        best_desc, score, _ = result
-        gl_code, gl_name    = gl_map[best_desc]
+    # Update stats to reflect actual commit count
+    session["stats"]["auto_assigned"] = assigned
 
-        db.update_item(
-            db_item["key"],
-            {"gl_code": gl_code, "gl_name": gl_name},
-            changed_by=changed_by,
-        )
-        assigned += 1
-        matches.append({
-            "item":       db_item.get("description", ""),
-            "matched_to": best_desc,
-            "score":      score,
-            "gl_code":    gl_code,
-            "gl_name":    gl_name,
-        })
-
-    return {
-        "assigned":  assigned,
-        "skipped":   skipped,
-        "no_match":  no_match,
-        "matches":   matches,
-    }
+    return session
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -257,43 +266,74 @@ def assign_gl_codes(db, categories: List[Dict],
 def import_as_master(db, categories: List[Dict],
                      cost_center: str = "",
                      changed_by: str = "gl_lists_import",
-                     skip_existing: bool = True) -> Dict:
+                     skip_existing: bool = True,
+                     progress_task_id: str = "gl_import") -> Dict:
     """
     Upsert every item from every GL list CSV into the database.
     Items that already exist (by key) are skipped or updated depending on
     skip_existing.
 
+    Writes live progress to /tmp/uha_progress/{progress_task_id}.json so the
+    Streamlit UI can poll it with render_bg_progress(progress_task_id).
+
     Returns {"added": int, "updated": int, "skipped": int, "errors": list}
     """
+    try:
+        from progress_tracker import ProgressTracker
+        total_items = sum(len(c["items"]) for c in categories)
+        tracker = ProgressTracker(
+            progress_task_id, total=total_items,
+            label="GL Master List Import",
+            write_every=50,          # write to disk every 50 items
+        )
+    except Exception:
+        tracker = None
+
     # Pre-load existing keys for fast lookup
     existing = {i["key"] for i in db.get_all_items()}
     added, updated, skipped, errors = 0, 0, 0, []
+    processed = 0
 
     for cat in categories:
+        cat_label = cat.get("gl_name", "")
         for item in cat["items"]:
+            processed += 1
             if cost_center:
                 item["cost_center"] = cost_center
             try:
                 if item["key"] in existing:
                     if skip_existing:
                         skipped += 1
-                        continue
-                    db.update_item(
-                        item["key"],
-                        {"gl_code":   item["gl_code"],
-                         "gl_name":   item["gl_name"],
-                         "pack_type": item["pack_type"],
-                         "cost":      item["cost"],
-                         "gtin":      item.get("gtin", "")},
-                        changed_by=changed_by,
-                    )
-                    updated += 1
+                    else:
+                        db.update_item(
+                            item["key"],
+                            {"gl_code":   item["gl_code"],
+                             "gl_name":   item["gl_name"],
+                             "pack_type": item["pack_type"],
+                             "cost":      item["cost"],
+                             "gtin":      item.get("gtin", "")},
+                            changed_by=changed_by,
+                        )
+                        updated += 1
                 else:
-                    db.add_item(item, changed_by=changed_by)
+                    db_item = {k: v for k, v in item.items() if not k.startswith("_")}
+                    db.add_item(db_item, changed_by=changed_by)
                     existing.add(item["key"])
                     added += 1
             except Exception as exc:
                 errors.append(f"{item.get('description','?')}: {exc}")
+
+            if tracker:
+                tracker.update(
+                    processed,
+                    f"{cat_label} — added {added:,} · skipped {skipped:,}",
+                )
+
+    if tracker:
+        tracker.done(
+            f"Complete — added {added:,} · updated {updated} "
+            f"· skipped {skipped:,} · errors {len(errors)}"
+        )
 
     return {"added": added, "updated": updated,
             "skipped": skipped, "errors": errors}

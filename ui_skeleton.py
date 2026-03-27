@@ -475,6 +475,7 @@ def build_default_registry() -> FeatureRegistry:
     reg.add("pca_engine",           "PCA Creator & Build Sandbox",   True)
     reg.add("transfer_engine",      "Transfer Sheet Generator",      True)
     reg.add("count_entry",          "Physical Count Entry",          True)
+    reg.add("match_review",         "Intelligent Match Review",      True)
     # ── Disabled until modules are built ─────────────────────────────────────
     reg.add("app_management",       "App Management Dashboard",      False)
     reg.add("changelog",            "What's New / Changelog",        False)

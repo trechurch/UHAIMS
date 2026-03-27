@@ -496,11 +496,48 @@ def render_sidebar(db, registry, feat_registry: FeatureRegistry,
 
         st.markdown("---")
 
+        # ── Background Process Indicator ─────────────────────────────
+        _render_sidebar_progress()
+
         # ── Dev Tools (localhost only) ────────────────────────────────
         _render_dev_tools()
 
         # ── User badge (moved to bottom) ──────────────────────────────
         auth.render_user_badge()
+
+
+def _render_sidebar_progress() -> None:
+    """Show compact live progress cards for any active background tasks."""
+    try:
+        from progress_tracker import list_active_tasks
+        import time as _t
+        tasks = list_active_tasks()
+        if not tasks:
+            return
+
+        for task in tasks:
+            task_id  = task["task_id"]
+            finished = task.get("finished", False)
+            stalled  = task.get("stalled",  False)
+            still_running = not finished and not stalled and not task.get("errored")
+
+            with st.expander(
+                f"{'⚙️' if still_running else '✅'} {task.get('label', task_id)}",
+                expanded=still_running,
+            ):
+                from utils import render_bg_progress
+                render_bg_progress(task_id, compact=True, auto_refresh=False)
+
+        # Single rerun pulse outside the expanders — only if something is live
+        running = [t for t in tasks
+                   if not t.get("finished") and not t.get("stalled")
+                   and not t.get("errored")]
+        if running:
+            _t.sleep(1.5)
+            st.rerun()
+
+    except Exception:
+        pass   # never crash the sidebar over a progress widget
 
 
 def _render_dev_tools() -> None:
