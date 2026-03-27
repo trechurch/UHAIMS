@@ -699,6 +699,249 @@ class InventoryDatabase:
                                   change_source="manual_deletion",
                                   changed_by=changed_by)
 
+    # ──────────────────────────────────────────────────────────────────────────
+    #  TRANSFER QoH COMMIT  (F-007)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def apply_transfer_qoh(self, transfer_id: str,
+                           changed_by: str = "transfer_approve") -> Dict:
+        """
+        Apply quantity-on-hand adjustments for an approved transfer.
+
+        For each transfer line:
+          • source CC  → quantity_on_hand -= qty
+          • dest CC    → quantity_on_hand += qty
+            (if item does not exist in dest CC, it is cloned from source with qty = transfer qty)
+
+        Returns {"applied": int, "cloned": int, "warnings": list}
+        """
+        applied, cloned, warnings = 0, 0, []
+
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+            # Get header
+            cur.execute("SELECT * FROM transfers WHERE transfer_id = %s", (transfer_id,))
+            hdr = cur.fetchone()
+            if not hdr:
+                return {"applied": 0, "cloned": 0,
+                        "warnings": [f"Transfer {transfer_id} not found"]}
+
+            from_cc = hdr["from_cc"]
+            to_cc   = hdr["to_cc"]
+
+            # Get lines
+            cur.execute("SELECT * FROM transfer_lines WHERE transfer_id = %s",
+                        (transfer_id,))
+            lines = cur.fetchall()
+
+        for line in lines:
+            key = line["item_key"]
+            qty = float(line["quantity"] or 0)
+            if qty <= 0:
+                continue
+
+            # ── Deduct from source ─────────────────────────────────────────
+            with get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE items SET quantity_on_hand = quantity_on_hand - %s, "
+                    "last_updated = %s "
+                    "WHERE key = %s AND cost_center = %s",
+                    (qty, datetime.utcnow(), key, from_cc),
+                )
+                if cur.rowcount == 0:
+                    warnings.append(
+                        f"Source item not found: {key} @ CC {from_cc}"
+                    )
+
+            # ── Add to destination ─────────────────────────────────────────
+            with get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE items SET quantity_on_hand = quantity_on_hand + %s, "
+                    "last_updated = %s "
+                    "WHERE key = %s AND cost_center = %s",
+                    (qty, datetime.utcnow(), key, to_cc),
+                )
+                if cur.rowcount == 0:
+                    # Item doesn't exist in dest CC — clone from source
+                    with get_conn() as conn2:
+                        cur2 = conn2.cursor(
+                            cursor_factory=psycopg2.extras.RealDictCursor)
+                        cur2.execute(
+                            "SELECT * FROM items WHERE key = %s "
+                            "AND cost_center = %s LIMIT 1",
+                            (key, from_cc),
+                        )
+                        src = cur2.fetchone()
+                    if src:
+                        src = dict(src)
+                        src.pop("id", None)
+                        src["cost_center"]    = to_cc
+                        src["quantity_on_hand"] = qty
+                        src["created_date"]   = datetime.utcnow()
+                        src["last_updated"]   = datetime.utcnow()
+                        cols = ", ".join(src.keys())
+                        vals = list(src.values())
+                        ph   = ", ".join(["%s"] * len(vals))
+                        with get_conn() as conn3:
+                            cur3 = conn3.cursor()
+                            try:
+                                cur3.execute(
+                                    f"INSERT INTO items ({cols}) VALUES ({ph}) "
+                                    "ON CONFLICT (key) DO UPDATE "
+                                    "SET quantity_on_hand = EXCLUDED.quantity_on_hand",
+                                    vals,
+                                )
+                                cloned += 1
+                            except Exception as exc:
+                                warnings.append(f"Clone failed for {key}: {exc}")
+                    else:
+                        warnings.append(
+                            f"Could not clone {key} to CC {to_cc} — no source record"
+                        )
+
+            applied += 1
+            self._add_history(
+                key, "transfer", "quantity_on_hand",
+                new_value=f"Transfer {transfer_id}: -{qty} from {from_cc}, +{qty} to {to_cc}",
+                change_source="transfer_approve",
+                changed_by=changed_by,
+            )
+
+        return {"applied": applied, "cloned": cloned, "warnings": warnings}
+
+    # ──────────────────────────────────────────────────────────────────────────
+    #  COUNT OVERRIDES  (F-031)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def ensure_count_override_tables(self) -> None:
+        """Create count_overrides and count_override_settings tables if absent."""
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS count_overrides (
+                    id          SERIAL PRIMARY KEY,
+                    item_key    TEXT NOT NULL,
+                    multiplier  NUMERIC(10,4) NOT NULL DEFAULT 1.0,
+                    reason      TEXT,
+                    created_by  TEXT,
+                    created_at  TIMESTAMPTZ DEFAULT NOW(),
+                    active      BOOLEAN DEFAULT TRUE
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                    idx_count_overrides_key ON count_overrides(item_key);
+
+                CREATE TABLE IF NOT EXISTS count_override_settings (
+                    setting_key TEXT PRIMARY KEY,
+                    value       TEXT NOT NULL
+                );
+                INSERT INTO count_override_settings (setting_key, value)
+                VALUES ('enabled', 'true')
+                ON CONFLICT (setting_key) DO NOTHING;
+            """)
+
+    def get_count_overrides(self, active_only: bool = True) -> List[Dict]:
+        """Return all count override rules."""
+        try:
+            self.ensure_count_override_tables()
+            with get_conn() as conn:
+                cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                if active_only:
+                    cur.execute(
+                        "SELECT * FROM count_overrides WHERE active = TRUE "
+                        "ORDER BY item_key"
+                    )
+                else:
+                    cur.execute(
+                        "SELECT * FROM count_overrides ORDER BY item_key"
+                    )
+                return [dict(r) for r in cur.fetchall()]
+        except Exception:
+            return []
+
+    def get_count_override_lookup(self) -> Dict[str, float]:
+        """Return {item_key: multiplier} for all active overrides."""
+        return {r["item_key"]: float(r["multiplier"])
+                for r in self.get_count_overrides(active_only=True)}
+
+    def upsert_count_override(self, item_key: str, multiplier: float,
+                               reason: str = "", created_by: str = "user") -> bool:
+        """Add or update an override rule for item_key."""
+        try:
+            self.ensure_count_override_tables()
+            with get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute("""
+                    INSERT INTO count_overrides
+                        (item_key, multiplier, reason, created_by, active)
+                    VALUES (%s, %s, %s, %s, TRUE)
+                    ON CONFLICT (item_key) DO UPDATE
+                        SET multiplier  = EXCLUDED.multiplier,
+                            reason      = EXCLUDED.reason,
+                            created_by  = EXCLUDED.created_by,
+                            active      = TRUE
+                """, (item_key.strip().upper(), multiplier, reason, created_by))
+            return True
+        except Exception as exc:
+            print(f"upsert_count_override error: {exc}")
+            return False
+
+    def toggle_count_override(self, item_key: str, active: bool) -> bool:
+        """Enable or disable an override rule without deleting it."""
+        try:
+            with get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE count_overrides SET active = %s WHERE item_key = %s",
+                    (active, item_key.strip().upper()),
+                )
+            return True
+        except Exception as exc:
+            print(f"toggle_count_override error: {exc}")
+            return False
+
+    def delete_count_override(self, item_key: str) -> bool:
+        try:
+            with get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "DELETE FROM count_overrides WHERE item_key = %s",
+                    (item_key.strip().upper(),),
+                )
+            return True
+        except Exception:
+            return False
+
+    def get_override_settings_enabled(self) -> bool:
+        """Returns True if count overrides are globally enabled."""
+        try:
+            with get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT value FROM count_override_settings "
+                    "WHERE setting_key = 'enabled'"
+                )
+                row = cur.fetchone()
+                return row and row[0].lower() == "true"
+        except Exception:
+            return True
+
+    def set_override_settings_enabled(self, enabled: bool) -> None:
+        try:
+            self.ensure_count_override_tables()
+            with get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "INSERT INTO count_override_settings (setting_key, value) "
+                    "VALUES ('enabled', %s) "
+                    "ON CONFLICT (setting_key) DO UPDATE SET value = EXCLUDED.value",
+                    ("true" if enabled else "false",),
+                )
+        except Exception:
+            pass
+
     # ── end of CRUD ───────────────────────────────────────────────────────────
 
 

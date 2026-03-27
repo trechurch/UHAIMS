@@ -483,18 +483,43 @@ class TransferDashboard(Dashboard):
                 } for r in lrows]), use_container_width=True, hide_index=True)
 
             if sel_xfr["status"] == "submitted":
-                if st.button("✅ Approve Transfer",
+                if st.button("✅ Approve & Commit Transfer",
                              key=f"approve_{sel_id}", type="primary"):
-                    with get_conn() as conn:
-                        cur = conn.cursor()
-                        cur.execute("""
-                            UPDATE transfers
-                            SET status='approved', approved_by=%s,
-                                approved_at=NOW()
-                            WHERE transfer_id=%s
-                        """, ("web_user", sel_id))
-                    st.success("Approved.")
-                    st.rerun()
+                    try:
+                        changed_by = "web_user"
+                        try:
+                            import auth as _a
+                            changed_by = _a.get_changed_by()
+                        except Exception:
+                            pass
+
+                        # 1 — mark approved
+                        with get_conn() as conn:
+                            cur = conn.cursor()
+                            cur.execute("""
+                                UPDATE transfers
+                                SET status='approved', approved_by=%s,
+                                    approved_at=NOW()
+                                WHERE transfer_id=%s
+                            """, (changed_by, sel_id))
+
+                        # 2 — apply QoH adjustments
+                        result = self.db.apply_transfer_qoh(sel_id,
+                                                            changed_by=changed_by)
+                        st.success(
+                            f"✅ Transfer approved — "
+                            f"{result['applied']} item(s) adjusted"
+                            + (f", {result['cloned']} cloned to dest CC"
+                               if result['cloned'] else "")
+                        )
+                        if result["warnings"]:
+                            for w in result["warnings"]:
+                                st.warning(f"⚠️ {w}")
+                        st.rerun()
+                    except Exception as exc:
+                        import traceback
+                        st.error(f"Approve failed: {exc}")
+                        st.code(traceback.format_exc())
 
         except Exception as exc:
             import traceback

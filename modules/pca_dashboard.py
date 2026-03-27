@@ -294,6 +294,104 @@ class PCADashboard(Dashboard):
             mime="application/json",
         )
 
+        # ── AI HELPER PANEL (F-001) ───────────────────────────────────────────
+        api_key = st.secrets.get("ANTHROPIC_API_KEY", "") if hasattr(st, "secrets") else ""
+        if not api_key:
+            try:
+                import os as _os
+                api_key = _os.environ.get("ANTHROPIC_API_KEY", "")
+            except Exception:
+                api_key = ""
+
+        with st.expander("💡 AI Cost Suggestions", expanded=False):
+            if not api_key:
+                st.info(
+                    "Set `ANTHROPIC_API_KEY` in `.streamlit/secrets.toml` or as an "
+                    "environment variable to enable AI ingredient suggestions."
+                )
+            else:
+                st.caption(
+                    "AI will review current ingredients and suggest lower-cost "
+                    "alternatives from your inventory."
+                )
+                ai_key = f"pca_ai_suggestions_{selected_id}"
+                if st.button("🤖 Generate Suggestions", key=f"pca_ai_btn_{selected_id}"):
+                    with st.spinner("Asking Claude for ingredient alternatives…"):
+                        try:
+                            suggestions = pca.generate_ai_suggestions(
+                                recipe_id=selected_id,
+                                api_key=api_key,
+                            )
+                            st.session_state[ai_key] = suggestions
+                        except Exception as exc:
+                            st.error(f"AI error: {exc}")
+                            st.session_state[ai_key] = []
+
+                suggestions = st.session_state.get(ai_key)
+                if suggestions is None:
+                    pass  # not yet run
+                elif not suggestions:
+                    st.info("No suggestions returned — recipe may already be well-optimised.")
+                else:
+                    # Build line_id lookup: description → line_id
+                    line_id_map = {
+                        (l.get("description") or l.get("item_key", "")): l["line_id"]
+                        for l in result["food_lines"]
+                    }
+
+                    rows = []
+                    for s in suggestions:
+                        variance = s.get("alternate_cost_variance", 0)
+                        rows.append({
+                            "Replace":      s.get("ingredient_to_replace", ""),
+                            "With":         s.get("alternate_item_description", ""),
+                            "Vendor":       s.get("alternate_vendor", ""),
+                            "Alt Cost/Ptn": f"${s.get('alternate_cost_per_portion', 0):.4f}",
+                            "Δ Cost":       f"{'+' if variance >= 0 else ''}{variance:.4f}",
+                            "Est Cost %":   f"{(s.get('product_cost_pct_effect') or 0) * 100:.1f}%",
+                        })
+
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+                    st.markdown("**⬆️ Swap an ingredient**")
+                    swap_labels = [
+                        f"{s.get('ingredient_to_replace')} → {s.get('alternate_item_description')}"
+                        for s in suggestions
+                        if s.get("alternate_item_key")
+                    ]
+                    swappable = [
+                        s for s in suggestions if s.get("alternate_item_key")
+                    ]
+                    if not swap_labels:
+                        st.caption("No swappable alternatives (no inventory key returned).")
+                    else:
+                        chosen_label = st.selectbox(
+                            "Select swap", swap_labels,
+                            key=f"pca_ai_swap_sel_{selected_id}"
+                        )
+                        chosen_idx = swap_labels.index(chosen_label)
+                        chosen = swappable[chosen_idx]
+                        line_id = line_id_map.get(chosen.get("ingredient_to_replace"))
+                        if line_id is None:
+                            st.caption("Original ingredient not found in current food lines.")
+                        elif st.button(
+                            f"⬆️ Swap now",
+                            key=f"pca_ai_swap_btn_{selected_id}_{chosen_idx}",
+                            type="primary",
+                        ):
+                            ok = pca.update_ingredient(
+                                line_id,
+                                {"item_key": chosen["alternate_item_key"]},
+                            )
+                            if ok:
+                                st.success(
+                                    f"Swapped to {chosen['alternate_item_description']}."
+                                )
+                                del st.session_state[ai_key]
+                                st.rerun()
+                            else:
+                                st.error("Swap failed — line not found.")
+
     # ── Add ingredient form ───────────────────────────────────────────────────
 
     def _add_ingredient_form(self, pca, recipe_id: int, ing_type: str):

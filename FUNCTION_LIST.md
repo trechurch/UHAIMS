@@ -7,7 +7,7 @@
 
 ## CRITICAL / HIGH PRIORITY
 
-### [~] F-001 — AI Sidebar / AI Helper Panel
+### [x] F-001 — AI Sidebar / AI Helper Panel
 **Area:** PCA Dashboard, Global
 **Problem:** `generate_ai_suggestions()` in pca_engine.py is wired to real Anthropic SDK
 but the PCA dashboard UI has no way to trigger it or display results.
@@ -67,7 +67,7 @@ has no UI surface for it.
 - Mode selector: by job / by date / by source file
 - Filter by job_type (invoice, count, db_import)
 
-### [ ] F-007 — Transfer Dashboard — commit to DB
+### [x] F-007 — Transfer Dashboard — commit to DB
 **Area:** Transfer Dashboard
 **Problem:** transfer_dashboard.py collects transfer data but has no DB write path.
 **Proposed Solution:**
@@ -264,7 +264,7 @@ pre-tax price. Without this, every PCA cost % is understated by ~8.25%.
 - Change formula to `cost_per_portion / (selling_price / TAX_ADJUSTMENT_FACTOR)`
 **Status: DONE — implemented in pca_engine.py**
 
-### [ ] F-031 — Port count_overrides / Override Rule Manager
+### [x] F-031 — Port count_overrides / Override Rule Manager
 **Area:** count_importer.py, database.py, new module
 **Problem:** The v3.0.x codebase had `count_overrides` and `count_override_settings` tables
 for items with wrong pack ratios (MOG tray items). This feature was dropped in the SDOA

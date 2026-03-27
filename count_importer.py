@@ -163,6 +163,10 @@ class CountRecord:
     verified:         bool = True
     source_fmt:       str  = ""
 
+    # Override tracking (F-031)
+    override_multiplier: float = 1.0
+    override_applied:    bool  = False
+
 
 @dataclass
 class DetectionResult:
@@ -1099,6 +1103,38 @@ def aggregate(records: List[CountRecord]) -> Dict:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────────
+#  COUNT OVERRIDES  (F-031)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def apply_count_overrides(records: List[CountRecord],
+                          override_lookup: Dict[str, float]) -> int:
+    """
+    Apply count override multipliers to a list of CountRecords in place.
+
+    override_lookup: {item_key (uppercase): multiplier}
+
+    Multiplies both count_qty_case and count_qty_each by the rule's multiplier.
+    Sets override_multiplier and override_applied on each affected record.
+
+    Returns the number of records where an override was applied.
+    """
+    applied = 0
+    for rec in records:
+        key = rec.item_key.upper().strip()
+        mult = override_lookup.get(key)
+        if mult and mult != 1.0:
+            rec.count_qty_case   = round(rec.count_qty_case   * mult, 4)
+            rec.count_qty_each   = round(rec.count_qty_each   * mult, 4)
+            rec.total_price_case = round(rec.total_price_case * mult, 4)
+            rec.total_price_each = round(rec.total_price_each * mult, 4)
+            rec.total_price      = round(rec.total_price_case + rec.total_price_each, 2)
+            rec.override_multiplier = mult
+            rec.override_applied    = True
+            applied += 1
+    return applied
+
+
 #  DB WRITER
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -1224,10 +1260,21 @@ def render_count_import_page(db, get_changed_by_fn):
             st.error(w)
         return
 
+    # ── Apply count overrides (F-031) ──────────────────────────────────────────
+    override_count = 0
+    try:
+        if db and db.get_override_settings_enabled():
+            lookup = db.get_count_override_lookup()
+            if lookup:
+                override_count = apply_count_overrides(result.records, lookup)
+    except Exception:
+        pass
+
     st.success(
         f"✅ **{result.item_count}** items · "
         f"**{result.location_count}** location(s) · "
         f"Grand total **${result.grand_total:,.2f}**"
+        + (f" · **{override_count}** override(s) applied" if override_count else "")
     )
 
     if result.warnings:
