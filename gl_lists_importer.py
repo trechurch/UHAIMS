@@ -217,37 +217,41 @@ def assign_gl_codes(db, categories: List[Dict],
     session = run_multiphase_match(db_items, categories,
                                    only_unassigned=only_unassigned)
 
-    # Auto-commit exact + fuzzy matches
-    assigned = 0
-    matches  = []
+    # Collect exact + fuzzy matches → bulk update in one SQL call
+    to_update = []   # {"key", "gl_code", "gl_name"}
+    matches   = []
+    demoted   = []   # fuzzy matches below min_score → go to probabilistic
+
     for mr in session["exact"] + session["fuzzy"]:
         best = mr["candidates"][0] if mr["candidates"] else None
         if not best:
             continue
-        # For fuzzy pass, enforce min_score on WRatio
         if mr["phase"] == "fuzzy" and best["wratio"] < min_score:
-            session["probabilistic"].append(
-                {**mr, "phase": "probabilistic"}
-            )
+            demoted.append({**mr, "phase": "probabilistic"})
             continue
+        to_update.append({
+            "key":     mr["db_item"]["key"],
+            "gl_code": best["gl_code"],
+            "gl_name": best["gl_name"],
+        })
+        matches.append({
+            "item":       mr["db_item"].get("description", ""),
+            "matched_to": best["description"],
+            "score":      best["wratio"],
+            "gl_code":    best["gl_code"],
+            "gl_name":    best["gl_name"],
+            "phase":      mr["phase"],
+        })
+
+    session["probabilistic"].extend(demoted)
+
+    # Single bulk update for all auto-assigned items
+    assigned = 0
+    if to_update:
         try:
-            db.update_item(
-                mr["db_item"]["key"],
-                {"gl_code": best["gl_code"], "gl_name": best["gl_name"]},
-                changed_by=changed_by,
-            )
-            assigned += 1
-            matches.append({
-                "item":       mr["db_item"].get("description", ""),
-                "matched_to": best["description"],
-                "score":      best["wratio"],
-                "gl_code":    best["gl_code"],
-                "gl_name":    best["gl_name"],
-                "phase":      mr["phase"],
-            })
+            assigned = db.bulk_update_fields(to_update, changed_by=changed_by)
         except Exception as exc:
-            logger.error("update_item failed for %s: %s",
-                         mr["db_item"].get("key"), exc)
+            logger.error("bulk_update_fields failed: %s", exc)
 
     session["assigned"] = assigned
     session["skipped"]  = skipped

@@ -618,19 +618,81 @@ class InventoryDatabase:
 
     def bulk_update_gl(self, keys: list, gl_code: str,
                         gl_name: str, changed_by: str = "user") -> int:
-        """Assign gl_code + gl_name to a list of item keys. Returns count updated."""
-        updated = 0
-        for key in keys:
-            ok = self._apply_update(
-                key,
-                {"gl_code": gl_code, "gl_name": gl_name,
-                 "last_updated": datetime.utcnow()},
+        """Assign the same gl_code + gl_name to a list of item keys (one batch SQL)."""
+        if not keys:
+            return 0
+        try:
+            with get_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE items SET gl_code=%s, gl_name=%s, last_updated=%s "
+                    "WHERE key = ANY(%s)",
+                    (gl_code, gl_name, datetime.utcnow(), keys),
+                )
+                count = cur.rowcount
+            self._add_history(
+                keys[0], "bulk_gl_assignment", "gl_code",
+                new_value=f"{gl_code} ({gl_name}) — {len(keys)} items",
                 change_source="bulk_gl_assignment",
                 changed_by=changed_by,
             )
-            if ok:
-                updated += 1
-        return updated
+            return count
+        except Exception as exc:
+            print(f"bulk_update_gl error: {exc}")
+            return 0
+
+    def bulk_update_fields(self, rows: list, changed_by: str = "user") -> int:
+        """
+        Update arbitrary fields for many items in one batch.
+
+        rows: [{"key": str, "gl_code": str, "gl_name": str, ...}, ...]
+
+        Uses a VALUES table joined to items — one round trip for any mix of values.
+        Only handles fields that appear in ALL rows (intersection).  Non-common
+        fields are silently ignored.
+        """
+        if not rows:
+            return 0
+        from psycopg2.extras import execute_values
+
+        # Determine safe field set (exclude key)
+        skip = {"key"}
+        field_sets = [set(r.keys()) - skip for r in rows]
+        fields = sorted(field_sets[0].intersection(*field_sets[1:])) if len(field_sets) > 1 \
+                 else sorted(field_sets[0])
+        if not fields:
+            return 0
+
+        now = datetime.utcnow()
+        all_fields = ["key"] + fields + ["last_updated"]
+
+        def _row(r):
+            return tuple([r["key"]] + [r.get(f) for f in fields] + [now])
+
+        # Build the UPDATE ... FROM (VALUES ...) form
+        col_assigns = ", ".join(f"{f} = v.{f}" for f in fields)
+        col_types   = ", ".join(["text"] + ["text"] * len(fields) + ["timestamp"])
+        sql = (
+            f"UPDATE items SET {col_assigns}, last_updated = v.last_updated "
+            f"FROM (VALUES %s) AS v(key, {', '.join(fields)}, last_updated) "
+            f"WHERE items.key = v.key"
+        )
+
+        try:
+            with get_conn() as conn:
+                cur = conn.cursor()
+                execute_values(cur, sql, [_row(r) for r in rows])
+                count = cur.rowcount
+            self._add_history(
+                rows[0]["key"], "bulk_field_update", "multiple",
+                new_value=f"Fields: {fields} — {len(rows)} items",
+                change_source="bulk_update",
+                changed_by=changed_by,
+            )
+            return count
+        except Exception as exc:
+            print(f"bulk_update_fields error: {exc}")
+            return 0
 
     def delete_item(self, key: str, changed_by: str = "system") -> bool:
         return self._apply_update(key, {"record_status": "discontinued"},
