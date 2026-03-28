@@ -39,6 +39,13 @@ import os
 import importlib
 import streamlit as st
 
+# ── Load .env if present ──────────────────────────────────────────────
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(__file__), ".env"), override=False)
+except ImportError:
+    pass
+
 # ── Page config (must be FIRST Streamlit call) ───────────────────────
 st.set_page_config(
     page_title="UHA Inventory",
@@ -746,6 +753,19 @@ def _render_dev_tools() -> None:
         return
 
     with st.expander("🛠 Dev Tools", expanded=False):
+        import subprocess, os as _os
+
+        # ── GitHub credentials ─────────────────────────────────────────────
+        gh_user    = _os.environ.get("GITHUB_USERNAME", "trechurch")
+        gh_token   = _os.environ.get("GITHUB_TOKEN", "")
+
+        dc1, dc2 = st.columns(2)
+        gh_user  = dc1.text_input("GitHub username", value=gh_user,
+                                   key="dev_gh_user")
+        gh_token = dc2.text_input("GitHub PAT", value=gh_token,
+                                   type="password", key="dev_gh_token",
+                                   placeholder="ghp_…")
+
         commit_msg = st.text_input(
             "Commit message",
             placeholder="leave blank for auto-timestamp",
@@ -753,31 +773,36 @@ def _render_dev_tools() -> None:
             label_visibility="collapsed",
         )
         if st.button("🚀 Push to GitHub", use_container_width=True, key="dev_push_btn"):
-            import subprocess, os
-            repo = os.path.dirname(os.path.abspath(__file__))
+            repo = _os.path.dirname(_os.path.abspath(__file__))
             msg  = commit_msg.strip() or f"Update {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}"
 
-            with st.spinner("Pushing…"):
-                add   = subprocess.run(["git", "-C", repo, "add", "."],
-                                       capture_output=True, text=True)
-                diff  = subprocess.run(["git", "-C", repo, "diff", "--cached", "--quiet"],
-                                       capture_output=True)
-                if diff.returncode == 0:
-                    st.info("Nothing to commit — working tree is clean.")
-                else:
-                    commit = subprocess.run(
-                        ["git", "-C", repo, "commit", "-m", msg],
-                        capture_output=True, text=True,
-                    )
-                    push = subprocess.run(
-                        ["git", "-C", repo, "push", "origin", "main"],
-                        capture_output=True, text=True,
-                    )
-                    if push.returncode == 0:
-                        st.success(f"✓ Pushed: {msg}")
+            if not gh_token:
+                st.error("Enter a GitHub PAT before pushing.")
+            else:
+                # Build authenticated remote URL
+                auth_remote = f"https://{gh_user}:{gh_token}@github.com/trechurch/UHAIMS.git"
+
+                with st.spinner("Pushing…"):
+                    subprocess.run(["git", "-C", repo, "add", "."],
+                                   capture_output=True, text=True)
+                    diff = subprocess.run(["git", "-C", repo, "diff", "--cached", "--quiet"],
+                                          capture_output=True)
+                    if diff.returncode == 0:
+                        st.info("Nothing to commit — working tree is clean.")
                     else:
-                        st.error("Push failed")
-                        st.code(push.stderr or commit.stderr)
+                        commit = subprocess.run(
+                            ["git", "-C", repo, "commit", "-m", msg],
+                            capture_output=True, text=True,
+                        )
+                        push = subprocess.run(
+                            ["git", "-C", repo, "push", auth_remote, "main"],
+                            capture_output=True, text=True,
+                        )
+                        if push.returncode == 0:
+                            st.success(f"✓ Pushed: {msg}")
+                        else:
+                            st.error("Push failed")
+                            st.code(push.stderr or commit.stderr)
 
 
 def _render_version_panel(registry) -> None:
