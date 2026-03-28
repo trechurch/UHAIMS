@@ -33,7 +33,7 @@ Changelog v5.1.0:
   - Sidebar collapse/expand chevron logic improved
 """
 
-__version__ = "5.4.0"
+__version__ = "5.4.5"
 
 import os
 import importlib
@@ -304,10 +304,7 @@ header[data-testid="stHeader"] { display: none !important; }
 }
 
 /* Push main content below the nav — stable selector + hashed fallback */
-div[data-testid="block-container"] {
-    padding-top: 54px !important;
-    padding-bottom: 1rem !important;
-}
+
 @media (min-width: calc(736px + 8rem)) {
     .st-emotion-cache-zy6yx3 {
         padding-left: 2rem;
@@ -315,8 +312,8 @@ div[data-testid="block-container"] {
         padding-top: 0px;
     }
     div[data-testid="block-container"] {
-        padding-left: 2rem; !important;
-        padding-right: 2rem; !important;
+        padding-left: 2rem !important;
+        padding-right: 2rem !important;
         padding-top: 0px !important;
     }
 }
