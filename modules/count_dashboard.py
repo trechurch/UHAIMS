@@ -25,7 +25,7 @@ class CountDashboard(Dashboard):
         "sidebar": {
             "section":  "",
             "position": 50,
-            "show":     True,
+            "show":     False,
         },
         "depends_on":   ["database", "count_importer"],
         "db_tables":    ["items", "item_history", "import_jobs"],

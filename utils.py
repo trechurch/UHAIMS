@@ -15,13 +15,17 @@ from typing import Any, Optional
 
 def _smart_fmt(value: float) -> str:
     """
-    Return a C-style format string based on the value:
-      whole number  → "%.0f"   (no decimal point)
-      real number   → "%.2f"   (2 decimal places in view, full precision stored)
+    Return a C-style format string using fewest decimal places needed:
+      whole number      → "%.0f"   (5 → "5")
+      1 decimal enough  → "%.1f"   (3.5 → "3.5")
+      2 decimals needed → "%.2f"   (3.14 → "3.14")
     """
     try:
-        if float(value) == int(float(value)):
+        v = float(value)
+        if v == int(v):
             return "%.0f"
+        if round(v, 1) == round(v, 2):
+            return "%.1f"
     except (TypeError, ValueError, OverflowError):
         pass
     return "%.2f"
@@ -69,15 +73,13 @@ def num_input(
 
 def fmt_num(value: Any, prefix: str = "", suffix: str = "") -> str:
     """
-    Format a number for display:
-      whole  → "42"
-      real   → "42.25"   (2 decimal places, trailing zero kept for alignment)
+    Format a number for display using fewest decimal places (max 2):
+      5   → "5"      3.5  → "3.5"      3.14 → "3.14"      3.147 → "3.15"
     """
     try:
         v = float(value)
-        if v == int(v):
-            return f"{prefix}{int(v):,}{suffix}"
-        return f"{prefix}{v:,.2f}{suffix}"
+        s = f"{v:,.2f}".rstrip("0").rstrip(".")
+        return f"{prefix}{s}{suffix}"
     except (TypeError, ValueError):
         return str(value)
 

@@ -35,7 +35,7 @@ class GLDashboard(Dashboard):
         "sidebar": {
             "section":  "Tools",
             "position": 10,
-            "show":     True,
+            "show":     False,
         },
         "depends_on":   ["database"],
         "db_tables":    ["items", "item_history"],

@@ -26,14 +26,14 @@ class InventoryBrowser(Dashboard):
 
     MANIFEST = {
         "id":       "inventory_browser",
-        "label":    "Inventory",
-        "version":  "2.0.0",
+        "label":    "Inventory Management",
+        "version":  "2.0.1",
         "icon":     "🗃️",
         "status":   "active",
         "page_key": "inventory",
         "menu": {
             "parent":   "Dashboards",
-            "label":    "Inventory Browser",
+            "label":    "Inventory Management",
             "shortcut": "I",
             "position": 30,
         },

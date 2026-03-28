@@ -26,14 +26,14 @@ class CountEntryDashboard(Dashboard):
 
     MANIFEST = {
         "id":       "count_entry_dashboard",
-        "label":    "Count Entry",
-        "version":  "1.0.0",
+        "label":    "Count",
+        "version":  "1.1.0",
         "icon":     "📝",
         "status":   "active",
         "page_key": "count_entry",
         "menu": {
             "parent":   "Dashboards",
-            "label":    "Count Entry",
+            "label":    "Count",
             "shortcut": "N",
             "position": 55,
         },

@@ -148,23 +148,19 @@ class MenuBar:
             # "Database" here = the stats overview for the active cost center,
             # not a separate DB connection. Switching cost center is in Settings.
             MenuItem(label="Dashboards", children=[
-                MenuItem("Database",      page_key="dashboard",  icon="🏠",
+                MenuItem("Overview",          page_key="dashboard",  icon="🏠",
                          shortcut="D", feature_flag="dashboard"),
-                MenuItem("Inventory",     page_key="inventory",  icon="📦",
+                MenuItem("Inventory Management", page_key="inventory", icon="🗃️",
                          shortcut="I", feature_flag="inventory"),
-                MenuItem("PCA",           page_key="pca",        icon="🧪",
-                         shortcut="P", feature_flag="pca_engine"),
-                MenuItem("Import",        page_key="import",     icon="📥",
+                MenuItem("Import",            page_key="import",     icon="📥",
                          shortcut="M", feature_flag="vendor_import"),
+                MenuItem("Count",             page_key="count_entry", icon="📝",
+                         shortcut="C", feature_flag="count_entry"),
                 MenuItem("", separator=True),
-                MenuItem("Count Import",  page_key="count",       icon="📋",
-                         shortcut="C", feature_flag="count_import"),
-                MenuItem("Count Entry",   page_key="count_entry", icon="📝",
-                         feature_flag="count_entry"),
-                MenuItem("Transfer",      page_key="transfer",   icon="🔀",
+                MenuItem("Transfer",          page_key="transfer",   icon="🔀",
                          shortcut="T", feature_flag="transfer_engine"),
-                MenuItem("App Management", page_key="app_management", icon="⚙️",
-                         shortcut="A", feature_flag="app_management"),
+                MenuItem("PCA",               page_key="pca",        icon="🧪",
+                         shortcut="P", feature_flag="pca_engine"),
             ]),
 
             # ── View  (spec 3.3) ──────────────────────────────────────────────
@@ -196,11 +192,9 @@ class MenuBar:
                              "window.location.href=u.toString();"
                          )),
                 MenuItem("", separator=True),
-                MenuItem("GL Codes",  page_key="gl_codes", icon="🏷️",
-                         feature_flag="gl_codes"),
-                MenuItem("History",   page_key="history",  icon="📜",
+                MenuItem("History",    page_key="history",  icon="📜",
                          feature_flag="history"),
-                MenuItem("Export",    page_key="export",   icon="📤",
+                MenuItem("Export",     page_key="export",   icon="📤",
                          feature_flag="export"),
             ]),
 
@@ -208,10 +202,11 @@ class MenuBar:
             MenuItem(label="Import", children=[
                 MenuItem("Vendor Invoice / Auto-Detect", page_key="import", icon="📥",
                          feature_flag="vendor_import"),
-                MenuItem("Count Import (file)",   page_key="count",       icon="📋",
+                MenuItem("Count Sheet (file)",    page_key="count",       icon="📋",
                          feature_flag="count_import"),
-                MenuItem("Count Entry (manual)",  page_key="count_entry", icon="📝",
-                         feature_flag="count_entry"),
+                MenuItem("", separator=True),
+                MenuItem("GL Code Manager",       page_key="gl_codes",    icon="🏷️",
+                         feature_flag="gl_codes"),
             ]),
 
             # ── Tools  (gated; hidden until features are enabled) ─────────────

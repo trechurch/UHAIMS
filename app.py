@@ -447,23 +447,42 @@ def render_top_nav(feat_registry: FeatureRegistry) -> None:
                 _shortcut_map[_c.shortcut.upper()] = f"__js__{_c.js_action}"
     _shortcut_js_map = str(_shortcut_map).replace("'", '"')
 
-    # Nav HTML + CSS rendered directly into React's content tree via st.markdown.
-    # position:sticky keeps it at the top of the viewport on scroll without
-    # needing window.parent access or any iframe trickery.
-    st.markdown(
-        _NAV_CSS
-        + '<style>header[data-testid="stHeader"]{display:none!important}</style>'
-        + f'<div id="uha-topnav-root">{nav_inner}</div>',
-        unsafe_allow_html=True,
-    )
-
-    # Keyboard shortcuts only — tiny iframe, one-time registration
+    # Inject nav CSS + HTML into window.parent.document via component iframe.
+    # st.markdown(position:sticky) is unreliable in Streamlit 1.55 — parent
+    # DOM injection is the only approach that reliably positions the nav.
     import streamlit.components.v1 as _cv1
+
+    _full_css = (
+        _css_text
+        + " header[data-testid='stHeader']{display:none!important}"
+    )
+    _full_css_js = _full_css.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+
     _cv1.html(f"""
 <script>
 (function() {{
   try {{
     var pd = window.parent.document;
+
+    // ── Inject / refresh nav CSS ───────────────────────────────────────
+    var styleEl = pd.getElementById('uha-nav-styles');
+    if (!styleEl) {{
+      styleEl = pd.createElement('style');
+      styleEl.id = 'uha-nav-styles';
+      pd.head.appendChild(styleEl);
+    }}
+    styleEl.textContent = `{_full_css_js}`;
+
+    // ── Inject / refresh nav HTML ──────────────────────────────────────
+    var navEl = pd.getElementById('uha-topnav-root');
+    if (!navEl) {{
+      navEl = pd.createElement('div');
+      navEl.id = 'uha-topnav-root';
+      pd.body.insertBefore(navEl, pd.body.firstChild);
+    }}
+    navEl.innerHTML = `{_nav_js}`;
+
+    // ── Keyboard shortcuts (wired once per page load) ──────────────────
     if (!pd._uhaKbWired) {{
       pd._uhaKbWired = true;
       var shortcuts = {_shortcut_js_map};
@@ -479,7 +498,7 @@ def render_top_nav(feat_registry: FeatureRegistry) -> None:
         }}
       }});
     }}
-  }} catch(e) {{}}
+  }} catch(e) {{ console.log('uha-nav inject err', e); }}
 }})();
 </script>
 """, height=1, scrolling=False)
@@ -526,7 +545,7 @@ def render_sidebar(db, registry, feat_registry: FeatureRegistry,
         current_db = get_current_database()
         cc_meta = COST_CENTERS.get(current_db, COST_CENTERS["57231"])
         
-        st.image("https://img.icons8.com/emoji/96/stadium.png", width=52)
+        st.markdown(f"# {cc_meta['icon']}")
         st.markdown(f"**{cc_meta['label']}**")
         st.caption(cc_meta['caption'])
         st.markdown("---")
@@ -578,9 +597,7 @@ def render_sidebar(db, registry, feat_registry: FeatureRegistry,
         fallback_items = []
         registered_keys = {i["page_key"] for i in items}
         for pk, lbl, icon in [
-            ("gl_codes", "GL Codes",  "🏷️"),
             ("history",  "History",   "📜"),
-            ("export",   "Export",    "📤"),
             ("settings", "Settings",  "⚙️"),
         ]:
             if pk not in registered_keys:

@@ -13,14 +13,14 @@ class DatabaseDashboard(Dashboard):
 
     MANIFEST = {
         "id":       "dashboard_module",
-        "label":    "Dashboard",
-        "version":  "1.2.0",
+        "label":    "Overview",
+        "version":  "1.2.1",
         "icon":     "🏠",
         "status":   "active",
         "page_key": "dashboard",
         "menu": {
             "parent":   "Dashboards",
-            "label":    "Dashboard",
+            "label":    "Overview",
             "shortcut": "D",
             "position": 10,
         },

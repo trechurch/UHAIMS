@@ -27,9 +27,9 @@ class ExportDashboard(Dashboard):
             "position": 30,
         },
         "sidebar": {
-            "section":  "Tools",
+            "section":  "",
             "position": 30,
-            "show":     True,
+            "show":     False,
         },
         "depends_on":   ["database"],
         "db_tables":    ["items"],
