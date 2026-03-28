@@ -394,8 +394,75 @@ with Add / Update / Delete buttons wired to `gl_manager.add_gl_mapping()`.
 - Add filter controls (GL code, vendor, status, cost center) above download buttons
 - Apply filters to the DataFrame before passing to ExcelWriter/to_csv
 
+### [x] F-039 — History Dashboard Redesign
+**Area:** modules/history_dashboard.py
+**Problem:** Current history view is a blank screen with no entries. Needs a fully functional
+sortable/filterable list that is never empty, with popup detail view for each entry.
+**Proposed Solution:**
+- Load all history entries on open (no blank state)
+- Sortable by: date, item, type of change, user, value impact
+- Filterable by: time range, group (item/supplier/brand/GL), change type, cost effect
+- Searchable by item name, user, notes
+- Selecting a row opens a modal/popup covering most of the list showing:
+  field-level diff, who changed it, when, and what triggered it (import job, manual edit, etc.)
+
+### [ ] F-040 — Importer: Recently Imported Section
+**Area:** modules/import_dashboard.py
+**Problem:** No visibility into what was recently imported — user must check history dashboard.
+**Proposed Solution:**
+- Add a "Recently Imported" section at the bottom (or collapsible expander) showing
+  last 5–10 import jobs: filename, date, items added/updated, errors, cost delta
+- Clicking a job row shows the full variance report for that import
+- Pull from `import_jobs` table (already exists)
+
+### [ ] F-041 — Count Module Complete Retool
+**Area:** modules/count_entry_dashboard.py, modules/count_dashboard.py
+**Problem:** Current count interface is inadequate. Needs three distinct workflows:
+Print Count Sheets, Enter Manual Counts, Scan Count Sheets (OCR).
+**Proposed Solution:**
+- Rename module page to "Count" (done); combine count_entry + count_dashboard into one module
+- **Print Count Sheets tab:**
+  - Show list of stands/locations (by cost center); toggle-select which to include
+  - Options: portrait/landscape, sort order, items per sheet, column selector
+    (description, unit, value/unit, total cost, last count, case entry, unit entry)
+  - Columns selectable and re-orderable
+  - Generated sheet encodes config as QR/barcode for Scan tab auto-recognition
+- **Enter Manual Counts tab:**
+  - Same layout options as Print tab so user can match their printed sheet
+  - Ten-key friendly: # → Enter → # → Enter → Enter (skip) → etc.
+  - GL-grouped rows with case and unit entry points side by side
+- **Scan Count Sheets tab:**
+  - File upload (drag & drop) + camera/scanner interface
+  - OCR reads sheet, auto-populates count data
+  - If QR/barcode present on sheet: auto-applies the original print configuration
+    (eliminates mis-reads from column-order mismatches)
+  - Preview panel shows OCR result before commit
+
+### [ ] F-042 — Combine App Management + Settings
+**Area:** modules/app_management_dashboard.py, app.py (_page_settings)
+**Problem:** App Management and Settings are separate pages but serve overlapping purposes.
+Users find it confusing to navigate two admin areas.
+**Proposed Solution:**
+- Merge Settings (feature toggles, user management) into App Management as additional tabs
+- App Management becomes the single admin hub: Users | Features | Appearance | DB Ops | About
+- Remove standalone Settings page from sidebar and nav
+- Keep ?page=settings as a redirect alias to ?page=app_management for backward compat
+
+### [ ] F-043 — Audit Count Overrides + POS Mapping Modules
+**Area:** modules/overrides_dashboard.py, modules/pos_map_dashboard.py
+**Problem:** Both modules exist but are unclear in purpose/value to new users.
+Count Overrides manages tray-item pack-ratio correction rules.
+POS Mapping manages POS menu item ↔ inventory item reconciliation.
+**Proposed Solution:**
+- Add clear help text / onboarding to each module explaining what it does and why
+- Count Overrides: surface the 3 known required tray rules (1LB/2LB/3LB), make it obvious
+  these are active and being applied during count imports
+- POS Mapping: show a sample of mapped vs unmapped items so purpose is immediately clear
+- Evaluate whether either should be folded into another module (e.g., overrides into Count,
+  POS map into Inventory Management)
+
 ---
 
-*Last updated: 2026-03-27*
+*Last updated: 2026-03-28*
 *Items completed: 32 (F-001, F-002, F-003, F-004, F-005, F-006, F-007, F-008, F-011, F-012, F-013, F-014, F-016, F-017, F-019, F-021, F-022, F-023, F-024, F-026, F-027, F-028, F-029, F-030, F-031, F-032, F-033, F-034, F-035, F-036, F-037, F-038)*
-*Items pending: 6*
+*Items pending: 11*

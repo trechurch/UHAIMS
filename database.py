@@ -1221,6 +1221,73 @@ class InventoryDatabase:
             """, (key, limit))
             return [dict(r) for r in cur.fetchall()]
 
+    def get_all_history(
+        self,
+        limit: int = 500,
+        change_type: str = None,
+        changed_by: str = None,
+        field_changed: str = None,
+        search: str = None,
+        since_days: int = None,
+    ) -> List[Dict]:
+        """Recent history across all items with optional filters. Joins to items for description/GL."""
+        clauses, params = ["1=1"], []
+
+        if self._cc:
+            clauses.append("i.cost_center = %s")
+            params.append(self._cc)
+        if change_type:
+            clauses.append("h.change_type = %s")
+            params.append(change_type)
+        if changed_by:
+            clauses.append("h.changed_by = %s")
+            params.append(changed_by)
+        if field_changed:
+            clauses.append("h.field_changed = %s")
+            params.append(field_changed)
+        if search:
+            clauses.append("(h.item_key ILIKE %s OR i.description ILIKE %s)")
+            params += [f"%{search}%", f"%{search}%"]
+        if since_days:
+            clauses.append(f"h.change_date >= NOW() - INTERVAL '{int(since_days)} days'")
+
+        where = " AND ".join(clauses)
+        params.append(limit)
+
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(f"""
+                SELECT h.history_id, h.item_key, h.change_date, h.change_type,
+                       h.field_changed, h.old_value, h.new_value,
+                       h.change_source, h.source_document, h.changed_by,
+                       h.change_reason, h.metadata,
+                       i.description, i.gl_code, i.gl_name, i.vendor
+                FROM item_history h
+                LEFT JOIN items i ON i.key = h.item_key
+                WHERE {where}
+                ORDER BY h.change_date DESC
+                LIMIT %s
+            """, params)
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_history_distinct_values(self) -> Dict:
+        """Distinct values for history filter dropdowns (change_type, users, fields)."""
+        with get_conn() as conn:
+            cur = conn.cursor()
+            if self._cc:
+                cc_join = "JOIN items i ON i.key = h.item_key WHERE i.cost_center = %s"
+                args = [self._cc]
+            else:
+                cc_join, args = "", []
+            result = {}
+            for col in ("change_type", "changed_by", "field_changed"):
+                cur.execute(
+                    f"SELECT DISTINCT h.{col} FROM item_history h {cc_join} ORDER BY 1",
+                    args,
+                )
+                result[col + "s"] = [r[0] for r in cur.fetchall() if r[0]]
+            return result
+
     # ── end of history ────────────────────────────────────────────────────────
 
 
