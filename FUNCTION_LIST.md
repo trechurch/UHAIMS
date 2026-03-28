@@ -415,7 +415,7 @@ sortable/filterable list that is never empty, with popup detail view for each en
 - Clicking a job row shows the full variance report for that import
 - Pull from `import_jobs` table (already exists)
 
-### [ ] F-041 — Count Module Complete Retool
+### [x] F-041 — Count Module Complete Retool
 **Area:** modules/count_entry_dashboard.py, modules/count_dashboard.py
 **Problem:** Current count interface is inadequate. Needs three distinct workflows:
 Print Count Sheets, Enter Manual Counts, Scan Count Sheets (OCR).
