@@ -293,11 +293,11 @@ _NAV_CSS = """
 /* Hide Streamlit's default toolbar */
 header[data-testid="stHeader"] { display: none !important; }
 
-/* Zero out spacer margins — nuke every layer in the wrapper chain */
-div[data-testid="stSpacer"] { margin: 0 !important; padding: 0 !important; height: 0 !important; min-height: 0 !important; }
-div[data-testid="element-container"]:has(div[data-testid="stSpacer"]) { margin: 0 !important; padding: 0 !important; min-height: 0 !important; height: 0 !important; }
-div[data-testid="stVerticalBlockBorderWrapper"]:has(div[data-testid="stSpacer"]) { margin: 0 !important; padding: 0 !important; min-height: 0 !important; height: 0 !important; }
-div[data-testid="stVerticalBlock"]:has(> div > div > div[data-testid="stSpacer"]) { gap: 0 !important; row-gap: 0 !important; }
+/* Tighten hr / markdown("---") spacing */
+div[data-testid="stMarkdown"] hr { margin: 0.25rem 0 !important; }
+div[data-testid="stMarkdownContainer"] hr { margin: 0.25rem 0 !important; }
+div[data-testid="element-container"]:has(hr) { margin-top: 0 !important; margin-bottom: 0 !important; padding-top: 0 !important; padding-bottom: 0 !important; }
+div[data-testid="stVerticalBlockBorderWrapper"]:has(hr) { margin-top: 0 !important; margin-bottom: 0 !important; }
 
 /* Nav bar — fixed to top of viewport */
 #uha-topnav-root {
@@ -329,6 +329,10 @@ section[data-testid="stSidebar"] {
     top: 46px !important;
     height: calc(100vh - 46px) !important;
     z-index: 999 !important;
+}
+/* Remove top padding inside sidebar */
+section[data-testid="stSidebar"] > div:first-child {
+    padding-top: 0.5rem !important;
 }
 /* Sidebar collapse/expand toggle button */
 button[data-testid="collapsedControl"] {
