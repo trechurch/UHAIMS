@@ -293,8 +293,10 @@ _NAV_CSS = """
 /* Hide Streamlit's default toolbar */
 header[data-testid="stHeader"] { display: none !important; }
 
-/* Zero out spacer margins */
-div[data-testid="stSpacer"] { margin: 0 !important; }
+/* Zero out spacer margins — target the spacer AND its wrappers */
+div[data-testid="stSpacer"] { margin: 0 !important; padding: 0 !important; }
+div[data-testid="element-container"]:has(div[data-testid="stSpacer"]) { margin: 0 !important; padding: 0 !important; min-height: 0 !important; }
+div[data-testid="stVerticalBlockBorderWrapper"]:has(div[data-testid="stSpacer"]) { margin: 0 !important; padding: 0 !important; }
 
 /* Nav bar — fixed to top of viewport */
 #uha-topnav-root {
