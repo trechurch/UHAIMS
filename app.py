@@ -310,8 +310,8 @@ div[data-testid="block-container"] {
 }
 @media (min-width: calc(736px + 8rem)) {
     .st-emotion-cache-zy6yx3 {
-        padding-left: 2px;
-        padding-right: 2px;
+        padding-left: 2rem;
+        padding-right: 2rem;
         padding-top: 0px;
     }
     div[data-testid="block-container"] {
