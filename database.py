@@ -1637,4 +1637,123 @@ class InventoryDatabase:
     # ── end of GL catalog ─────────────────────────────────────────────────────
     # ── end of internals ──────────────────────────────────────────────────────
 
+
+    # ──────────────────────────────────────────────────────────────────────────
+    #  STANDS  (sub-locations within a cost center)
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def ensure_stands_tables(self) -> None:
+        """Create stands and stand_items tables if they don't exist."""
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS stands (
+                    stand_id    TEXT PRIMARY KEY,
+                    stand_name  TEXT NOT NULL,
+                    cost_center TEXT,
+                    description TEXT,
+                    active      BOOLEAN DEFAULT TRUE,
+                    created_at  TIMESTAMPTZ DEFAULT NOW()
+                );
+                CREATE TABLE IF NOT EXISTS stand_items (
+                    stand_id    TEXT REFERENCES stands(stand_id) ON DELETE CASCADE,
+                    item_key    TEXT,
+                    sort_order  INTEGER DEFAULT 0,
+                    par_qty     NUMERIC(10,3) DEFAULT 0,
+                    PRIMARY KEY (stand_id, item_key)
+                );
+                CREATE INDEX IF NOT EXISTS idx_stand_items_item  ON stand_items(item_key);
+                CREATE INDEX IF NOT EXISTS idx_stand_items_stand ON stand_items(stand_id);
+            """)
+            conn.commit()
+
+    def get_stands(self, cost_center: str = None, active_only: bool = True) -> List[Dict]:
+        """Return all stands, optionally filtered by cost_center."""
+        self.ensure_stands_tables()
+        clauses, params = [], []
+        if cost_center:
+            clauses.append("cost_center = %s"); params.append(cost_center)
+        if active_only:
+            clauses.append("active = TRUE")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(
+                f"SELECT * FROM stands {where} ORDER BY cost_center, stand_name",
+                params,
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def upsert_stand(self, stand_id: str, stand_name: str,
+                     cost_center: str = None, description: str = None) -> None:
+        """Insert or update a stand record."""
+        self.ensure_stands_tables()
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO stands (stand_id, stand_name, cost_center, description)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (stand_id) DO UPDATE
+                    SET stand_name  = EXCLUDED.stand_name,
+                        cost_center = EXCLUDED.cost_center,
+                        description = EXCLUDED.description
+            """, (stand_id, stand_name, cost_center, description))
+            conn.commit()
+
+    def upsert_stand_items(self, stand_id: str, items: List[Dict]) -> int:
+        """
+        Bulk upsert items for a stand.
+        Each item dict: {item_key, sort_order, par_qty}
+        Clears existing items for the stand first, then inserts.
+        Returns count inserted.
+        """
+        self.ensure_stands_tables()
+        if not items:
+            return 0
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("DELETE FROM stand_items WHERE stand_id = %s", (stand_id,))
+            for item in items:
+                cur.execute("""
+                    INSERT INTO stand_items (stand_id, item_key, sort_order, par_qty)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (stand_id, item_key) DO UPDATE
+                        SET sort_order = EXCLUDED.sort_order,
+                            par_qty    = EXCLUDED.par_qty
+                """, (stand_id,
+                      item["item_key"],
+                      item.get("sort_order", 0),
+                      item.get("par_qty", 0)))
+            conn.commit()
+            return len(items)
+
+    def get_stand_items(self, stand_id: str) -> List[Dict]:
+        """
+        Return items for a stand joined with inventory item data,
+        ordered by sort_order.
+        """
+        self.ensure_stands_tables()
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("""
+                SELECT si.stand_id, si.sort_order, si.par_qty,
+                       i.key, i.description, i.pack_type, i.cost, i.conv_ratio,
+                       i.gl_code, i.gl_name, i.vendor, i.quantity_on_hand,
+                       i.is_chargeable, i.record_status
+                FROM stand_items si
+                JOIN items i ON i.key = si.item_key
+                WHERE si.stand_id = %s
+                ORDER BY si.sort_order
+            """, (stand_id,))
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_stand_item_count(self, stand_id: str) -> int:
+        self.ensure_stands_tables()
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM stand_items WHERE stand_id = %s", (stand_id,))
+            return cur.fetchone()[0]
+
+    # ── end of stands ─────────────────────────────────────────────────────────
+
 # ── end of InventoryDatabase ──────────────────────────────────────────────────

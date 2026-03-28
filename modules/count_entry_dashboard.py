@@ -54,6 +54,8 @@ CC_OPTIONS = {
     "57236 — Catering":             "57236",
 }
 
+CC_LABELS = {v: k for k, v in CC_OPTIONS.items()}
+
 
 def _default_cols():
     return [c["key"] for c in COLUMNS if c["default"]]
@@ -191,18 +193,42 @@ class CountEntryDashboard(Dashboard):
     def _render_print(self) -> None:
         st.markdown("#### Configure & Download")
         st.caption(
-            "Select locations, choose columns, pick sort order. "
+            "Select stands, choose columns, pick sort order. "
             "Generated Excel embeds a QR code encoding the exact configuration — "
             "upload the scanned sheet and it will auto-configure the intake form."
         )
 
-        # ── Location selector ─────────────────────────────────────────────────
-        selected_labels = st.multiselect(
-            "Locations / Stands",
-            list(CC_OPTIONS.keys()),
-            default=["57231 — TDECU Concessions"],
-            key="ps_locs",
-        )
+        # ── Stand selector ────────────────────────────────────────────────────
+        current_cc = None
+        try:
+            from app import get_current_database
+            current_cc = get_current_database()
+        except Exception:
+            current_cc = "57231"
+
+        all_stands = self.db.get_stands(cost_center=current_cc)
+
+        if all_stands:
+            stand_options = {s["stand_name"]: s["stand_id"] for s in all_stands}
+            selected_names = st.multiselect(
+                "Stands",
+                list(stand_options.keys()),
+                default=list(stand_options.keys())[:1],
+                key="ps_stands",
+            )
+            use_stands = True
+        else:
+            # Fallback: cost center level
+            st.caption("No stands configured — selecting by location.")
+            selected_labels = st.multiselect(
+                "Locations",
+                list(CC_OPTIONS.keys()),
+                default=["57231 — TDECU Concessions"],
+                key="ps_locs",
+            )
+            stand_options  = {}
+            selected_names = []
+            use_stands     = False
 
         # ── Options row ───────────────────────────────────────────────────────
         oa, ob, oc = st.columns(3)
@@ -235,26 +261,44 @@ class CountEntryDashboard(Dashboard):
         }
         st.session_state["ce_config"] = cfg
 
-        if not selected_labels:
-            st.info("Select at least one location.")
-            return
-
-        # ── Preview item count ────────────────────────────────────────────────
-        total_items = sum(
-            len(self.db.get_items_by_cost_center(CC_OPTIONS[lbl]) or [])
-            for lbl in selected_labels
-        )
-        st.caption(
-            f"📋 {len(selected_labels)} location(s) · ~{total_items:,} items · "
-            f"{len(chosen_keys)} columns · {orient}"
-        )
+        # ── Preview ───────────────────────────────────────────────────────────
+        if use_stands:
+            if not selected_names:
+                st.info("Select at least one stand.")
+                return
+            total_items = sum(
+                self.db.get_stand_item_count(stand_options[n])
+                for n in selected_names
+            )
+            st.caption(
+                f"📋 {len(selected_names)} stand(s) · ~{total_items:,} items · "
+                f"{len(chosen_keys)} columns · {orient}"
+            )
+        else:
+            if not selected_labels:
+                st.info("Select at least one location.")
+                return
+            total_items = sum(
+                len(self.db.get_items_by_cost_center(CC_OPTIONS[lbl]) or [])
+                for lbl in selected_labels
+            )
+            st.caption(
+                f"📋 {len(selected_labels)} location(s) · ~{total_items:,} items · "
+                f"{len(chosen_keys)} columns · {orient}"
+            )
 
         if st.button("📥 Generate Count Sheets", type="primary", key="ps_gen"):
             with st.spinner("Building workbook…"):
-                wb = self._build_workbook(
-                    selected_labels, count_date, chosen_keys, sort_key,
-                    orient.lower(), cfg
-                )
+                if use_stands:
+                    wb = self._build_workbook_stands(
+                        selected_names, stand_options, count_date,
+                        chosen_keys, sort_key, orient.lower(), cfg
+                    )
+                else:
+                    wb = self._build_workbook(
+                        selected_labels, count_date, chosen_keys, sort_key,
+                        orient.lower(), cfg
+                    )
             if wb:
                 buf = io.BytesIO()
                 wb.save(buf)
@@ -266,8 +310,9 @@ class CountEntryDashboard(Dashboard):
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="ps_dl",
                 )
+                n_sheets = len(selected_names) if use_stands else len(selected_labels)
                 st.success(
-                    f"Workbook ready — {len(selected_labels)} sheet(s). "
+                    f"Workbook ready — {n_sheets} sheet(s). "
                     "QR code embedded on each sheet encodes the column configuration."
                 )
 
@@ -438,6 +483,158 @@ class CountEntryDashboard(Dashboard):
 
     # ══════════════════════════════════════════════════════════════════════════
     # TAB 2 — ENTER MANUAL COUNTS
+    # ── Stand-aware workbook builder ──────────────────────────────────────────
+
+    def _build_workbook_stands(self, stand_names, stand_options, count_date,
+                               col_keys, sort_key, orient, cfg):
+        """Build workbook using stand_items (ordered, par-qty aware)."""
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+            from openpyxl.utils import get_column_letter
+            from openpyxl.drawing.image import Image as XLImage
+        except ImportError:
+            st.error("openpyxl required")
+            return None
+
+        wb = Workbook()
+        wb.remove(wb.active)
+
+        thin       = Side(style="thin",   color="BBBBBB")
+        thick      = Side(style="medium", color="888888")
+        cb         = Border(left=thin, right=thin, top=thin, bottom=thin)
+        hb         = Border(left=thick, right=thick, top=thick, bottom=thick)
+        hdr_fill   = PatternFill("solid", fgColor="1A1A2E")
+        gl_fill    = PatternFill("solid", fgColor="16213E")
+        alt_fill   = PatternFill("solid", fgColor="F0F4F8")
+        wht_fill   = PatternFill("solid", fgColor="FFFFFF")
+        hdr_font   = Font(bold=True, color="FFFFFF", size=10)
+        gl_font    = Font(bold=True, color="E63946", size=9)
+        body_font  = Font(size=9)
+        center_al  = Alignment(horizontal="center", vertical="center")
+        left_al    = Alignment(horizontal="left",   vertical="center")
+
+        qr_img_buf = None
+        try:
+            import qrcode as _qr
+            qr = _qr.QRCode(box_size=4, border=2)
+            qr.add_data(_encode_config(cfg))
+            qr.make(fit=True)
+            pil_img = qr.make_image(fill_color="black", back_color="white")
+            qr_img_buf = io.BytesIO()
+            pil_img.save(qr_img_buf, format="PNG")
+            qr_img_buf.seek(0)
+        except Exception:
+            pass
+
+        for stand_name in stand_names:
+            stand_id = stand_options[stand_name]
+            items    = self.db.get_stand_items(stand_id)
+            if not items:
+                continue
+
+            # Items already in sort_order from DB; re-sort if user chose different order
+            if sort_key != "gl_desc":
+                items = _sort_items(items, sort_key)
+
+            n_cols = len(col_keys)
+            ws     = wb.create_sheet(title=stand_name[:31])
+
+            # Title
+            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=n_cols)
+            t = ws.cell(1, 1, f"UHA INVENTORY COUNT — {stand_name.upper()}")
+            t.font = Font(bold=True, color="FFFFFF", size=12)
+            t.fill = hdr_fill; t.alignment = center_al
+            ws.row_dimensions[1].height = 22
+
+            ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=n_cols)
+            d = ws.cell(2, 1,
+                f"Count Date: {count_date.strftime('%A, %B %d, %Y')}    Stand: {stand_name}")
+            d.font = Font(italic=True, size=9, color="444444")
+            d.alignment = left_al
+            ws.row_dimensions[2].height = 14
+
+            # Headers
+            for ci, ck in enumerate(col_keys, 1):
+                c = ws.cell(3, ci, COL_LABELS[ck])
+                c.font = hdr_font; c.fill = hdr_fill; c.border = hb
+                c.alignment = left_al if ci <= 2 else center_al
+                ws.column_dimensions[get_column_letter(ci)].width = COL_WIDTHS.get(ck, 12)
+            ws.row_dimensions[3].height = 16
+
+            # Group by GL if gl_desc sort, else flat list
+            if sort_key == "gl_desc":
+                rows_to_write = []
+                groups = _group_by_gl(items)
+                for gl_label, grp in groups.items():
+                    rows_to_write.append(("group_header", gl_label))
+                    for item in grp:
+                        rows_to_write.append(("item", item))
+            else:
+                rows_to_write = [("item", i) for i in items]
+
+            row = 4; item_idx = 0
+            for rtype, rdata in rows_to_write:
+                if rtype == "group_header":
+                    ws.merge_cells(start_row=row, start_column=1,
+                                   end_row=row, end_column=n_cols)
+                    gh = ws.cell(row, 1, rdata)
+                    gh.font = gl_font; gh.fill = gl_fill
+                    gh.alignment = left_al; gh.border = cb
+                    ws.row_dimensions[row].height = 13
+                else:
+                    item = rdata
+                    fill = wht_fill if item_idx % 2 == 0 else alt_fill
+                    cost = float(item.get("cost") or 0)
+                    conv = float(item.get("conv_ratio") or 1)
+                    uc   = cost / conv if conv > 1 else cost
+                    par  = float(item.get("par_qty") or 0)
+
+                    for ci, ck in enumerate(col_keys, 1):
+                        if   ck == "gl_code":    val = item.get("gl_code") or ""
+                        elif ck == "description":val = item.get("description") or ""
+                        elif ck == "pack_type":  val = item.get("pack_type") or ""
+                        elif ck == "vendor":     val = item.get("vendor") or ""
+                        elif ck == "unit_cost":  val = uc
+                        elif ck == "last_count": val = float(item.get("quantity_on_hand") or 0)
+                        elif ck == "last_value": val = float(item.get("quantity_on_hand") or 0) * uc
+                        else:                    val = ""
+
+                        c = ws.cell(row, ci, val)
+                        c.font = body_font; c.fill = fill; c.border = cb
+                        if ck in ("unit_cost", "last_value"):
+                            c.number_format = '"$"#,##0.00'; c.alignment = center_al
+                        elif ck in ("case_count", "unit_count", "last_count"):
+                            c.number_format = "#,##0.##"; c.alignment = center_al
+                        elif ci > 2: c.alignment = center_al
+                        else: c.alignment = left_al
+
+                    ws.row_dimensions[row].height = 13
+                    item_idx += 1
+                row += 1
+
+            ws.freeze_panes = "A4"
+            ws.page_setup.orientation = ("landscape" if orient == "landscape" else "portrait")
+            ws.page_setup.paperSize   = ws.PAPERSIZE_LETTER
+            ws.page_setup.fitToPage   = True
+            ws.page_setup.fitToWidth  = 1
+            ws.page_setup.fitToHeight = 0
+            ws.print_title_rows       = "1:3"
+            ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+            if qr_img_buf:
+                try:
+                    qr_img_buf.seek(0)
+                    img = XLImage(io.BytesIO(qr_img_buf.read()))
+                    img.width = 72; img.height = 72
+                    qr_col = get_column_letter(n_cols + 1)
+                    ws.column_dimensions[qr_col].width = 11
+                    ws.add_image(img, f"{qr_col}1")
+                except Exception:
+                    pass
+
+        return wb
+
     # ══════════════════════════════════════════════════════════════════════════
 
     def _render_enter(self) -> None:
@@ -474,12 +671,34 @@ class CountEntryDashboard(Dashboard):
         sort_key  = cfg.get("sort", "gl_desc")
         col_keys  = cfg.get("cols", _default_cols())
 
+        # ── Stand selector ────────────────────────────────────────────────────
+        current_cc = None
+        try:
+            from app import get_current_database
+            current_cc = get_current_database()
+        except Exception:
+            current_cc = "57231"
+
+        all_stands   = self.db.get_stands(cost_center=current_cc)
+        enter_stand_id   = None
+        enter_stand_name = None
+
+        if all_stands:
+            stand_opts = {"— All items (no stand filter) —": None}
+            stand_opts.update({s["stand_name"]: s["stand_id"] for s in all_stands})
+            sel_stand = st.selectbox(
+                "Stand", list(stand_opts.keys()), key="en_stand",
+            )
+            enter_stand_id   = stand_opts[sel_stand]
+            enter_stand_name = sel_stand if enter_stand_id else None
+
         # ── Session management ────────────────────────────────────────────────
         session_id = st.session_state.get("ce_session_id")
 
         hc1, hc2, hc3 = st.columns([2, 2, 1])
         count_date = hc1.date_input("Count Date", value=date.today(), key="en_date")
-        notes      = hc2.text_input("Notes", placeholder="Stand, counter name, shift…",
+        placeholder = f"{enter_stand_name} — counter name, shift…" if enter_stand_name else "Stand, counter name, shift…"
+        notes      = hc2.text_input("Notes", placeholder=placeholder,
                                     key="en_notes")
 
         if not session_id:
@@ -522,12 +741,18 @@ class CountEntryDashboard(Dashboard):
         )
 
         # ── Load items + build data-editor dataframe ──────────────────────────
-        items = self.db.get_all_items("active") or []
-        if not items:
-            st.warning("No active items for this cost center.")
-            return
+        if enter_stand_id:
+            items = self.db.get_stand_items(enter_stand_id) or []
+            # Stand items are already in sort_order; only re-sort if user chose different order
+            if sort_key != "gl_desc":
+                items = _sort_items(items, sort_key)
+        else:
+            items = self.db.get_all_items("active") or []
+            items = _sort_items(items, sort_key)
 
-        items      = _sort_items(items, sort_key)
+        if not items:
+            st.warning("No items found for the selected stand/location.")
+            return
         saved      = st.session_state.get("ce_counts", {})
         entry_cols = [k for k in col_keys if next(
             (c for c in COLUMNS if c["key"] == k and c["editable"]), None
@@ -641,10 +866,11 @@ class CountEntryDashboard(Dashboard):
         # ── Metrics + action buttons ───────────────────────────────────────────
         st.markdown("---")
         m1, m2, m3 = st.columns(3)
+        sheet_label = enter_stand_name or "All Items"
         m1.metric("Items Counted",      sum(1 for v in counts.values()
                                             if v.get("case",0)+v.get("unit",0) > 0))
         m2.metric("Total Count Value",  fmt_currency(total_value))
-        m3.metric("Items on Sheet",     len(items))
+        m3.metric(f"Items — {sheet_label}", len(items))
 
         b1, b2, b3 = st.columns(3)
         if b1.button("💾 Save Progress", use_container_width=True, key="en_save"):
