@@ -290,19 +290,35 @@ def _inject_theme() -> None:
 
 _NAV_CSS = """
 <style>
-/* Remove Streamlit's default block-container top padding so nav sits flush */
-div[data-testid="block-container"] {
-    padding-top: 0 !important;
-    padding-bottom: 1rem !important;
-}
+/* Hide Streamlit's default toolbar */
+header[data-testid="stHeader"] { display: none !important; }
+
+/* Nav bar — fixed to top of viewport */
 #uha-topnav-root {
-    position: sticky;
+    position: fixed;
     top: 0;
     left: 0;
     right: 0;
-    z-index: 999999;
-    margin-left: calc(-1 * var(--block-container-padding-left, 1rem));
-    margin-right: calc(-1 * var(--block-container-padding-right, 1rem));
+    z-index: 9999999;
+    width: 100%;
+}
+
+/* Push main content below the nav — stable selector + hashed fallback */
+div[data-testid="block-container"] {
+    padding-top: 54px !important;
+    padding-bottom: 1rem !important;
+}
+@media (min-width: calc(736px + 8rem)) {
+    .st-emotion-cache-zy6yx3 {
+        padding-left: 2px;
+        padding-right: 2px;
+        padding-top: 0px;
+    }
+    div[data-testid="block-container"] {
+        padding-left: 0px !important;
+        padding-right: 0px !important;
+        padding-top: 0px !important;
+    }
 }
 
 /* Push sidebar below the nav bar */
@@ -437,78 +453,11 @@ def render_top_nav(feat_registry: FeatureRegistry) -> None:
         f'</div>'
     )
 
-    # Extract raw CSS text from the _NAV_CSS <style> block
-    _css_text = _NAV_CSS.replace("<style>", "").replace("</style>", "").strip()
-
-    # Escape backticks and template-literal markers for JS template string
-    _css_js  = _css_text.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
-    _nav_js  = nav_inner.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
-
-    # Build Alt+key → URL map for keyboard shortcut listener
-    _shortcut_map = {}
-    for _m in menu_bar.menus:
-        for _c in _m.children:
-            if _c.shortcut and _c.page_key:
-                _shortcut_map[_c.shortcut.upper()] = f"?page={_c.page_key}"
-            elif _c.shortcut and _c.js_action:
-                _shortcut_map[_c.shortcut.upper()] = f"__js__{_c.js_action}"
-    _shortcut_js_map = str(_shortcut_map).replace("'", '"')
-
-    # Inject nav CSS + HTML into window.parent.document via component iframe.
-    # st.markdown(position:sticky) is unreliable in Streamlit 1.55 — parent
-    # DOM injection is the only approach that reliably positions the nav.
-    import streamlit.components.v1 as _cv1
-
-    _full_css = (
-        _css_text
-        + " header[data-testid='stHeader']{display:none!important}"
+    # Render nav directly via st.markdown — position:fixed pins it to viewport top.
+    st.markdown(
+        f"{_NAV_CSS}<div id='uha-topnav-root'>{nav_inner}</div>",
+        unsafe_allow_html=True,
     )
-    _full_css_js = _full_css.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
-
-    _cv1.html(f"""
-<script>
-(function() {{
-  try {{
-    var pd = window.parent.document;
-
-    // ── Inject / refresh nav CSS ───────────────────────────────────────
-    var styleEl = pd.getElementById('uha-nav-styles');
-    if (!styleEl) {{
-      styleEl = pd.createElement('style');
-      styleEl.id = 'uha-nav-styles';
-      pd.head.appendChild(styleEl);
-    }}
-    styleEl.textContent = `{_full_css_js}`;
-
-    // ── Inject / refresh nav HTML ──────────────────────────────────────
-    var navEl = pd.getElementById('uha-topnav-root');
-    if (!navEl) {{
-      navEl = pd.createElement('div');
-      navEl.id = 'uha-topnav-root';
-      pd.body.insertBefore(navEl, pd.body.firstChild);
-    }}
-    navEl.innerHTML = `{_nav_js}`;
-
-    // ── Keyboard shortcuts (wired once per page load) ──────────────────
-    if (!pd._uhaKbWired) {{
-      pd._uhaKbWired = true;
-      var shortcuts = {_shortcut_js_map};
-      pd.addEventListener('keydown', function(e) {{
-        if (!e.altKey || e.ctrlKey || e.metaKey) return;
-        var k = e.key.toUpperCase();
-        if (shortcuts[k]) {{
-          e.preventDefault();
-          var target = shortcuts[k];
-          if (target.startsWith('__js__')) {{
-            try {{ eval(target.slice(6)); }} catch(err) {{}}
-          }} else {{ window.parent.location.href = target; }}
-        }}
-      }});
-    }}
-  }} catch(e) {{ console.log('uha-nav inject err', e); }}
-}})();
-</script>
-""", height=1, scrolling=False)
 
 # ────────────────────────────────────────────────────────────────────
 # SIDEBAR
@@ -623,7 +572,8 @@ def render_sidebar(db, registry, feat_registry: FeatureRegistry,
         # a programmatic session-state assignment, so user clicks still work.
         # The on_change callback handles the actual navigation so no
         # post-render redirect check is needed.
-        st.session_state["sidebar_nav_radio"] = cur
+        if st.session_state.get("sidebar_nav_radio") != cur:
+            st.session_state["sidebar_nav_radio"] = cur
 
         def _on_nav_change():
             dest = st.session_state.get("sidebar_nav_radio")
@@ -634,7 +584,6 @@ def render_sidebar(db, registry, feat_registry: FeatureRegistry,
             "Navigate",
             options=nav_keys,
             format_func=lambda k: nav_labels.get(k, k),
-            index=idx,
             key="sidebar_nav_radio",
             on_change=_on_nav_change,
         )

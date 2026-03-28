@@ -160,7 +160,10 @@ class VersionSyncer:
         url = f"{self._base_url}/{filepath}"
         headers = {}
         try:
-            token = st.secrets.get("GITHUB_TOKEN")
+            import os
+            token = os.environ.get("GITHUB_TOKEN")
+            if not token:
+                token = st.secrets.get("GITHUB_TOKEN")
             if token:
                 headers["Authorization"] = f"token {token}"
         except Exception:
