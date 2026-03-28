@@ -315,8 +315,8 @@ div[data-testid="block-container"] {
         padding-top: 0px;
     }
     div[data-testid="block-container"] {
-        padding-left: 0px !important;
-        padding-right: 0px !important;
+        padding-left: 2rem; !important;
+        padding-right: 2rem; !important;
         padding-top: 0px !important;
     }
 }
