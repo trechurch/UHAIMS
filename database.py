@@ -1642,14 +1642,76 @@ class InventoryDatabase:
     #  STANDS  (sub-locations within a cost center)
     # ──────────────────────────────────────────────────────────────────────────
 
+    # ── Venues ────────────────────────────────────────────────────────────────
+
+    VENUE_SEEDS = [
+        ("TDECU",    "FB",  "TDECU Stadium",      "Football"),
+        ("FERTITTA", "FC",  "Fertitta Center",     "Basketball / Arena"),
+        ("SCHROEDER","BB",  "Schroeder Park",      "Baseball"),
+        ("SOFTBALL", "SB",  "Softball Stadium",    "Softball"),
+        ("SOCCER",   "SC",  "Soccer Stadium",      "Soccer"),
+        ("TENNIS",   "TEN", "Tennis Center",       "Tennis Courts"),
+        ("BOWLING",  "BWL", "Bowling Alley",       ""),
+        ("AQUATICS", "SWM", "Swimming Center",     "Aquatics"),
+        ("UNION",    "SUB", "Student Union",       "Starbucks, Panda Express, etc."),
+        ("CAFE1",    "CF1", "Main Cafeteria",      ""),
+        ("CAFE2",    "CF2", "24-Hour Cafeteria",   "Open 24/7"),
+    ]
+
+    def ensure_venues_table(self) -> None:
+        """Create venues table and seed known venues."""
+        with get_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS venues (
+                    venue_id    TEXT PRIMARY KEY,
+                    venue_code  TEXT NOT NULL,
+                    venue_name  TEXT NOT NULL,
+                    notes       TEXT,
+                    active      BOOLEAN DEFAULT TRUE,
+                    created_at  TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
+            for venue_id, code, name, notes in self.VENUE_SEEDS:
+                cur.execute("""
+                    INSERT INTO venues (venue_id, venue_code, venue_name, notes)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (venue_id) DO UPDATE
+                        SET venue_code = EXCLUDED.venue_code,
+                            venue_name = EXCLUDED.venue_name,
+                            notes      = EXCLUDED.notes
+                """, (venue_id, code, name, notes))
+            conn.commit()
+
+    def get_venues(self, active_only: bool = True) -> List[Dict]:
+        self.ensure_venues_table()
+        where = "WHERE active = TRUE" if active_only else ""
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(f"SELECT * FROM venues {where} ORDER BY venue_name")
+            return [dict(r) for r in cur.fetchall()]
+
+    def get_venue(self, venue_id: str) -> Optional[Dict]:
+        self.ensure_venues_table()
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("SELECT * FROM venues WHERE venue_id = %s", (venue_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    # ── Stands ────────────────────────────────────────────────────────────────
+
     def ensure_stands_tables(self) -> None:
-        """Create stands and stand_items tables if they don't exist."""
+        """Create stands and stand_items tables if they don't exist, run migrations."""
+        self.ensure_venues_table()
         with get_conn() as conn:
             cur = conn.cursor()
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS stands (
                     stand_id    TEXT PRIMARY KEY,
                     stand_name  TEXT NOT NULL,
+                    stand_sub   TEXT,
+                    venue_id    TEXT REFERENCES venues(venue_id),
                     cost_center TEXT,
                     description TEXT,
                     active      BOOLEAN DEFAULT TRUE,
@@ -1665,7 +1727,66 @@ class InventoryDatabase:
                 CREATE INDEX IF NOT EXISTS idx_stand_items_item  ON stand_items(item_key);
                 CREATE INDEX IF NOT EXISTS idx_stand_items_stand ON stand_items(stand_id);
             """)
+            # Add venue_id / stand_sub columns if upgrading from old schema
+            for col, typedef in [("venue_id", "TEXT"), ("stand_sub", "TEXT")]:
+                try:
+                    cur.execute(
+                        f"ALTER TABLE stands ADD COLUMN IF NOT EXISTS {col} {typedef}"
+                    )
+                except Exception:
+                    pass
             conn.commit()
+        self._migrate_stand_ids()
+
+    def _migrate_stand_ids(self) -> None:
+        """
+        One-time migration: rename old-format stand IDs (57231_103)
+        to new format (103_FB_57231) and backfill venue_id.
+        Only processes rows whose stand_id starts with a cost_center prefix.
+        """
+        # Map cost_center → (venue_id, venue_code)
+        cc_venue_map = {
+            "57231": ("TDECU",    "FB"),
+            "57232": ("FERTITTA", "FC"),
+            "57233": ("SCHROEDER","BB"),
+            "57234": ("SOFTBALL", "SB"),
+            "57235": ("FERTITTA", "FC"),   # Team Dining @ Fertitta
+            "57236": ("TDECU",    "FB"),   # Catering @ TDECU
+        }
+        with get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute("SELECT stand_id, stand_name, cost_center FROM stands")
+            old_stands = [dict(r) for r in cur.fetchall()]
+
+        for stand in old_stands:
+            sid = stand["stand_id"]
+            cc  = stand.get("cost_center") or ""
+            # Only migrate old-format IDs: start with "{cc}_"
+            if not (cc and sid.startswith(f"{cc}_")):
+                continue
+            venue_id, venue_code = cc_venue_map.get(cc, (None, None))
+            if not venue_id:
+                continue
+            slug     = sid[len(cc) + 1:]          # e.g. "103", "119_bar"
+            new_id   = f"{slug}_{venue_code}_{cc}" # e.g. "103_FB_57231"
+            with get_conn() as conn:
+                cur = conn.cursor()
+                # Insert new stand record
+                cur.execute("""
+                    INSERT INTO stands (stand_id, stand_name, venue_id, cost_center,
+                                        description, active, created_at)
+                    SELECT %s, stand_name, %s, cost_center,
+                           description, active, created_at
+                    FROM stands WHERE stand_id = %s
+                    ON CONFLICT (stand_id) DO NOTHING
+                """, (new_id, venue_id, sid))
+                # Repoint stand_items to new stand_id
+                cur.execute("""
+                    UPDATE stand_items SET stand_id = %s WHERE stand_id = %s
+                """, (new_id, sid))
+                # Remove old stand record
+                cur.execute("DELETE FROM stands WHERE stand_id = %s", (sid,))
+                conn.commit()
 
     def get_stands(self, cost_center: str = None, active_only: bool = True) -> List[Dict]:
         """Return all stands, optionally filtered by cost_center."""
@@ -1685,19 +1806,28 @@ class InventoryDatabase:
             return [dict(r) for r in cur.fetchall()]
 
     def upsert_stand(self, stand_id: str, stand_name: str,
-                     cost_center: str = None, description: str = None) -> None:
+                     cost_center: str = None, venue_code: str = None,
+                     description: str = None) -> None:
         """Insert or update a stand record."""
         self.ensure_stands_tables()
+        # Resolve venue_id from venue_code if provided
+        venue_id = None
+        if venue_code:
+            venues = self.get_venues(active_only=False)
+            match  = next((v for v in venues if v["venue_code"] == venue_code), None)
+            if match:
+                venue_id = match["venue_id"]
         with get_conn() as conn:
             cur = conn.cursor()
             cur.execute("""
-                INSERT INTO stands (stand_id, stand_name, cost_center, description)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO stands (stand_id, stand_name, venue_id, cost_center, description)
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (stand_id) DO UPDATE
                     SET stand_name  = EXCLUDED.stand_name,
+                        venue_id    = COALESCE(EXCLUDED.venue_id, stands.venue_id),
                         cost_center = EXCLUDED.cost_center,
                         description = EXCLUDED.description
-            """, (stand_id, stand_name, cost_center, description))
+            """, (stand_id, stand_name, venue_id, cost_center, description))
             conn.commit()
 
     def upsert_stand_items(self, stand_id: str, items: List[Dict]) -> int:

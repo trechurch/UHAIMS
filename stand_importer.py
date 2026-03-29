@@ -37,8 +37,15 @@ def _slugify(name: str) -> str:
     return s.strip("_")
 
 
-def _stand_id(cost_center: str, tab_name: str) -> str:
-    return f"{cost_center}_{_slugify(tab_name)}"
+def _stand_id(cost_center: str, tab_name: str, venue_code: str = "") -> str:
+    """
+    Build stand ID in canonical format: {slug}_{venue_code}_{cost_center}
+    e.g. '103_FB_57231', '119_bar_FB_57231'
+    """
+    slug = _slugify(tab_name)
+    if venue_code:
+        return f"{slug}_{venue_code}_{cost_center}"
+    return f"{slug}_{cost_center}"   # fallback if venue unknown
 
 
 def _parse_cost_col(val) -> Tuple[Optional[float], Optional[float]]:
@@ -66,15 +73,16 @@ def _find_data_start(ws) -> int:
     return 5  # fallback
 
 
-def parse_stand_sheet(ws, tab_name: str, cost_center: str) -> Dict:
+def parse_stand_sheet(ws, tab_name: str, cost_center: str,
+                      venue_code: str = "") -> Dict:
     """
     Parse one worksheet into a stand dict:
     {
-        stand_id, stand_name, cost_center,
+        stand_id, stand_name, cost_center, venue_code,
         items: [{description, sort_order, pack_type, unit_cost, par_qty}]
     }
     """
-    stand_id   = _stand_id(cost_center, tab_name)
+    stand_id   = _stand_id(cost_center, tab_name, venue_code)
     data_start = _find_data_start(ws)
     items      = []
 
@@ -120,6 +128,7 @@ def parse_stand_sheet(ws, tab_name: str, cost_center: str) -> Dict:
         "stand_id":    stand_id,
         "stand_name":  tab_name,
         "cost_center": cost_center,
+        "venue_code":  venue_code,
         "items":       items,
     }
 
@@ -176,6 +185,7 @@ def import_stand_sheets(
     db,
     filepath: str,
     cost_center: str,
+    venue_code: str = "",
     min_score: int = 72,
     dry_run: bool = False,
 ) -> Dict:
@@ -225,7 +235,7 @@ def import_stand_sheets(
 
         try:
             ws    = wb[tab_name]
-            stand = parse_stand_sheet(ws, tab_name, cost_center)
+            stand = parse_stand_sheet(ws, tab_name, cost_center, venue_code)
 
             if not stand["items"]:
                 continue
@@ -244,6 +254,7 @@ def import_stand_sheets(
                     stand["stand_id"],
                     stand["stand_name"],
                     cost_center=cost_center,
+                    venue_code=venue_code,
                 )
                 db.upsert_stand_items(stand["stand_id"], [
                     {
