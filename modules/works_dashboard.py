@@ -175,7 +175,19 @@ class WorksDashboard(Dashboard):
     }
 
     def on_load(self) -> None:
-        pass
+        # Ensure venues + stands tables exist (creates + seeds if first run)
+        try:
+            self.db.ensure_stands_tables()
+        except Exception:
+            pass
+
+    def verify(self) -> list:
+        # Auto-create tables before health check runs — avoids false warning
+        try:
+            self.db.ensure_stands_tables()
+        except Exception:
+            pass
+        return super().verify()
 
     def sidebar(self) -> None:
         with st.sidebar:
